@@ -1,0 +1,4 @@
+(library
+ (name a2a_client)
+ (public_name a2a-client)
+ (libraries eio cstruct cohttp-eio cohttp http uri yojson base64 ptime uuidm logs))

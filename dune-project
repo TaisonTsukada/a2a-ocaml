@@ -1,0 +1,40 @@
+(lang dune 3.0)
+
+(name a2a-client)
+
+(generate_opam_files true)
+
+(source
+ (github TaisonTsukada/a2a-ocaml))
+
+(license MIT)
+
+(authors "Taison Tsukada")
+
+(maintainers "Taison Tsukada <ttt.code.dev@gmail.com>")
+
+(documentation "https://github.com/TaisonTsukada/a2a-ocaml#readme")
+
+(package
+ (name a2a-client)
+ (synopsis "A2A (Agent2Agent) protocol v1.0 client for OCaml 5 / Eio")
+ (description
+  "Type-safe client for the A2A (Agent2Agent) protocol v1.0, using the JSON-RPC binding over cohttp-eio. Supports Agent Card discovery, SendMessage, GetTask, CancelTask, SendStreamingMessage and SubscribeToTask with incremental Server-Sent Events parsing, and task lifecycle helpers with bounded polling.")
+ (tags (a2a agent2agent agents ai json-rpc sse eio))
+ (depends
+  (ocaml (>= 5.1))
+  (eio (>= 1.0))
+  (cstruct (>= 6.0))
+  (cohttp-eio (>= 6.0))
+  (cohttp (>= 6.0))
+  (http (>= 6.0))
+  (uri (>= 4.0))
+  (yojson (>= 3.0))
+  (base64 (>= 3.0))
+  (ptime (>= 1.0))
+  (uuidm (>= 0.9.9))
+  (logs (>= 0.7))
+  (alcotest :with-test)
+  (mtime :with-test)
+  (eio_main :with-test)
+  (odoc :with-doc)))

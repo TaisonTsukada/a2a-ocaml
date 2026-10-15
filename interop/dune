@@ -1,0 +1,4 @@
+; Not part of `dune test`: needs a running agent. See README.
+(executable
+ (name interop)
+ (libraries a2a-client eio_main unix))

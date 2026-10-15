@@ -1,0 +1,3 @@
+(executable
+ (name a2a_cli)
+ (libraries a2a-client eio_main))
