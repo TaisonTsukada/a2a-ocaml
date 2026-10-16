@@ -1,14 +1,3 @@
-(* Small command-line A2A client.
-
-     dune exec examples/a2a_cli.exe -- URL send "Hello"
-     dune exec examples/a2a_cli.exe -- URL wait "Research this company"
-     dune exec examples/a2a_cli.exe -- URL stream "Write a report"
-     dune exec examples/a2a_cli.exe -- URL get TASK_ID
-     dune exec examples/a2a_cli.exe -- URL cancel TASK_ID
-
-   URL is the agent's base URL (its card is read from
-   URL/.well-known/agent-card.json). Set A2A_TOKEN to send a bearer token. *)
-
 open A2a_client
 
 let print_task (t : Task.t) =

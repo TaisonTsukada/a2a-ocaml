@@ -1,8 +1,5 @@
 open A2a_client
 
-(* Runs [f] on Eio's mock backend: its monotonic clock jumps forward
-   whenever every fiber is blocked, so timeouts and polling intervals take
-   no real time and are deterministic. *)
 let run f = Eio_mock.Backend.run_full (fun env -> f env#mono_clock)
 let endpoint = Uri.of_string "http://agent.test/a2a"
 
@@ -39,8 +36,6 @@ let expect_error name pred = function
 let ok name = function
   | Ok v -> v
   | Error e -> Alcotest.failf "%s: %s" name (Error.to_string e)
-
-(* ---------- unary calls ---------- *)
 
 let test_send_message_message () =
   run @@ fun clock ->
@@ -87,7 +82,6 @@ let test_send_message_task () =
       Alcotest.(check (option string)) "context id kept" (Some "ctx-1") t.context_id;
       Alcotest.(check bool) "in progress" true
         (match Outcome.of_task t with Outcome.In_progress _ -> true | _ -> false);
-      (* Continuing the task carries both ids. *)
       let follow = Task.follow_up_text t "more input" in
       Alcotest.(check (option string)) "follow task" (Some "t-1") follow.task_id;
       Alcotest.(check (option string)) "follow ctx" (Some "ctx-1") follow.context_id
@@ -134,7 +128,6 @@ let test_invalid_responses () =
   invalid "wrong id" (Mock.result_envelope ~id:"someone-else" (`Assoc [ ("task", task_json "t" "WORKING") ]));
   invalid "schema" {|{"jsonrpc":"2.0","id":"x","result":{"task":{"id":"t"}}}|};
   invalid "too large" (String.make 5000 ' ');
-  (* id must match, so build the bad-schema case with the real id *)
   let transport, _ =
     Mock.transport ~clock (fun req ->
         Mock.json_reply
@@ -153,7 +146,6 @@ let test_transport_failure () =
   let transport : Transport.t = fun ~sw:_ _ -> failwith "connection refused" in
   let client = create ~clock ~transport endpoint in
   send_text client "x" |> expect_error "refused" (function Error.Transport_error _ -> true | _ -> false);
-  (* failure while reading the body *)
   let transport, rec_ =
     Mock.transport ~clock (fun _ -> Mock.reply [ Mock.Chunk "{\"jsonrpc\""; Mock.Raise (Failure "reset") ])
   in
@@ -163,7 +155,6 @@ let test_transport_failure () =
 
 let test_timeout () =
   run @@ fun clock ->
-  (* headers never arrive in time *)
   let transport, rec_ = Mock.transport ~clock (fun _ -> { (Mock.json_reply "{}") with delay = 60. }) in
   let client = create ~clock ~transport ~timeout:5. endpoint in
   let t0 = Eio.Time.Mono.now clock in
@@ -171,13 +162,11 @@ let test_timeout () =
   let elapsed = Mtime.span t0 (Eio.Time.Mono.now clock) |> Mtime.Span.to_float_ns in
   Alcotest.(check (float 1e6)) "gave up after 5s" 5e9 elapsed;
   Alcotest.(check int) "released" 1 rec_.released;
-  (* body stalls *)
   let transport, rec_ = Mock.transport ~clock (fun _ -> Mock.reply [ Mock.Chunk "{"; Mock.Block ]) in
   let client = create ~clock ~transport ~timeout:5. endpoint in
   get_task client "t" |> expect_error "body timeout" (function Error.Timeout _ -> true | _ -> false);
   Alcotest.(check int) "released" 1 rec_.released
 
-(* Credentials must never reach the logs. *)
 let test_no_secrets_in_logs () =
   let buf = Buffer.create 1024 in
   let ppf = Format.formatter_of_buffer buf in
@@ -207,8 +196,6 @@ let test_no_secrets_in_logs () =
         (fun secret ->
           if Test_codec.contains ~sub:secret logs then Alcotest.failf "log leaked %s:\n%s" secret logs)
         [ "SECRET-TOKEN-123"; "SECRET-KEY-456"; "SECRET-PW"; "SECRET-Q" ])
-
-(* ---------- task lifecycle ---------- *)
 
 let scripted_tasks states =
   let remaining = ref states in
@@ -253,7 +240,6 @@ let test_wait_for_task () =
   let t = ok "wait" (wait_for_task client ~interval:1. ~backoff:2. ~max_interval:3. ~timeout:60. "t-1") in
   Alcotest.(check bool) "completed" true (Task.state t = Task_state.Completed);
   Alcotest.(check int) "4 polls" 4 (List.length rec_.requests);
-  (* sleeps 1 + 2 + 3 (capped) *)
   let elapsed = Mtime.span t0 (Eio.Time.Mono.now clock) |> Mtime.Span.to_float_ns in
   Alcotest.(check (float 1e6)) "backoff" 6e9 elapsed;
   Alcotest.(check int) "all released" 4 rec_.released
@@ -300,7 +286,6 @@ let test_send_message_and_wait () =
    | Ok (Outcome.Input_required t) -> Alcotest.(check string) "task" "t-1" t.id
    | Ok _ -> Alcotest.fail "expected Input_required"
    | Error e -> Alcotest.fail (Error.to_string e));
-  (* direct message: no polling *)
   let transport, rec_ =
     Mock.transport ~clock (fun req ->
         Mock.json_reply
@@ -310,8 +295,6 @@ let test_send_message_and_wait () =
    | Ok (Outcome.Message _) -> ()
    | _ -> Alcotest.fail "expected Message");
   Alcotest.(check int) "single request" 1 (List.length rec_.requests)
-
-(* ---------- streaming ---------- *)
 
 let stream_events ~id =
   let ev j = Mock.sse_data (Mock.result_envelope ~id j) in
@@ -347,7 +330,6 @@ let stream_events ~id =
                [ ("taskId", `String "t-1"); ("contextId", `String "ctx-1");
                  ("status", `Assoc [ ("state", `String "TASK_STATE_COMPLETED") ]) ]) ]) ]
 
-(* Split [s] into chunks of [n] bytes. *)
 let chunks n s =
   let rec go i acc =
     if i >= String.length s then List.rev acc
@@ -367,9 +349,6 @@ let test_streaming_incremental () =
   let transport, rec_ =
     Mock.transport ~clock (fun req ->
         let events = stream_events ~id:(Mock.request_id req) in
-        (* Each event arrives in 7-byte TCP-ish chunks with delays, and the
-           next event is only produced once the previous one was handled:
-           proof that events are processed as they arrive. *)
         Mock.sse_reply
           (List.concat
              (List.mapi
@@ -378,7 +357,7 @@ let test_streaming_incremental () =
                   :: Mock.Sleep 0.5
                   :: List.map (fun c -> Mock.Chunk c) (chunks 7 e))
                 events)
-          @ [ Mock.Block (* the client must stop on the terminal event *) ]))
+          @ [ Mock.Block  ]))
   in
   let client = create ~clock ~transport endpoint in
   let outcome =
@@ -419,7 +398,6 @@ let test_streaming_disconnect () =
   let transport, rec_ =
     Mock.transport ~clock (fun req ->
         let events = stream_events ~id:(Mock.request_id req) in
-        (* two events, then half of the third, then EOF *)
         let third = List.nth events 2 in
         Mock.sse_reply
           [ Mock.Chunk (List.nth events 0); Mock.Chunk (List.nth events 1);
@@ -432,7 +410,6 @@ let test_streaming_disconnect () =
    | _ -> Alcotest.fail "expected Stream_ended");
   Alcotest.(check int) "partial event not delivered" 2 !n;
   Alcotest.(check int) "released" 1 rec_.released;
-  (* connection reset mid-stream *)
   let transport, rec_ =
     Mock.transport ~clock (fun req ->
         Mock.sse_reply [ Mock.Chunk (List.hd (stream_events ~id:(Mock.request_id req))); Mock.Raise (Failure "reset") ])
@@ -455,7 +432,6 @@ let test_streaming_interrupted_end () =
 
 let test_streaming_rpc_error () =
   run @@ fun clock ->
-  (* error inside the event stream *)
   let transport, _ =
     Mock.transport ~clock (fun req ->
         let id = Mock.request_id req in
@@ -466,19 +442,16 @@ let test_streaming_rpc_error () =
   in
   send_streaming_message (create ~clock ~transport endpoint) (Message.user_text "x")
   |> expect_error "in-stream" (function Error.Rpc_error { code = Internal_error; _ } -> true | _ -> false);
-  (* immediate JSON error instead of a stream *)
   let transport, _ =
     Mock.transport ~clock (fun req ->
         Mock.json_reply (Mock.error_envelope ~id:(`String (Mock.request_id req)) (-32004) "Streaming is not supported"))
   in
   send_streaming_message (create ~clock ~transport endpoint) (Message.user_text "x")
   |> expect_error "upfront" (function Error.Rpc_error { code = Unsupported_operation; _ } -> true | _ -> false);
-  (* garbage event *)
   let transport, rec_ = Mock.transport ~clock (fun _ -> Mock.sse_reply [ Mock.Chunk "data: {oops\n\n"; Mock.Block ]) in
   send_streaming_message (create ~clock ~transport endpoint) (Message.user_text "x")
   |> expect_error "garbage" (function Error.Invalid_response _ -> true | _ -> false);
   Alcotest.(check int) "released" 1 rec_.released;
-  (* HTTP error *)
   let transport, _ = Mock.transport ~clock (fun _ -> Mock.reply ~status:401 [ Mock.Chunk "no" ]) in
   send_streaming_message (create ~clock ~transport endpoint) (Message.user_text "x")
   |> expect_error "401" (function Error.Http_error { status = 401; _ } -> true | _ -> false)
@@ -525,14 +498,12 @@ let test_streaming_idle_timeout () =
             Mock.Sleep 5.; Mock.Chunk ": keepalive\n"; Mock.Sleep 5.; Mock.Chunk ": keepalive\n";
             Mock.Sleep 20.; Mock.Chunk "never" ])
   in
-  (* keep-alive comments reset the idle timer; a 20 s gap does not *)
   send_streaming_message (create ~clock ~transport ~stream_idle_timeout:10. endpoint) (Message.user_text "x")
   |> expect_error "idle" (function Error.Timeout _ -> true | _ -> false);
   Alcotest.(check int) "released" 1 rec_.released
 
 let test_streaming_stalled_error_body () =
   run @@ fun clock ->
-  (* 500 with a body that never completes must still time out *)
   let transport, rec_ =
     Mock.transport ~clock (fun _ ->
         Mock.reply ~status:200 ~headers:[ ("content-type", "application/json") ] [ Mock.Chunk "{"; Mock.Block ])
@@ -579,8 +550,6 @@ let test_subscribe_to_task () =
   Alcotest.(check string) "method" "SubscribeToTask" (meth req);
   Alcotest.(check bool) "params" true (params req = `Assoc [ ("id", `String "t-1") ])
 
-(* ---------- discovery ---------- *)
-
 let card_json =
   {|{"name":"Echo","description":"d","version":"1.0.0",
      "supportedInterfaces":[{"url":"http://agent.test/rpc","protocolBinding":"JSONRPC","protocolVersion":"1.0","tenant":"t9"}],
@@ -618,9 +587,9 @@ let test_fetch_agent_card_errors () =
   fetch () |> expect_error "404" (function Error.Http_error { status = 404; _ } -> true | _ -> false);
   reply := Mock.json_reply "{\"name\": 42}";
   fetch () |> expect_error "bad card" (function Error.Invalid_response _ -> true | _ -> false);
-  reply := Mock.json_reply {|{"name":"old","supportedInterfaces":[{"url":"http://a","protocolBinding":"JSONRPC","protocolVersion":"0.3"}]}|};
+  reply := Mock.json_reply {|{"name":"old","supportedInterfaces":[{"url":"http://a","protocolBinding":"JSONRPC","protocolVersion":"0.2"}]}|};
   connect ~clock ~transport (Uri.of_string "http://agent.test")
-  |> expect_error "v0.3 only" (function Error.No_compatible_interface _ -> true | _ -> false)
+  |> expect_error "v0.2 only" (function Error.No_compatible_interface _ -> true | _ -> false)
 
 let tests =
   [ ("SendMessage -> Message", `Quick, test_send_message_message);

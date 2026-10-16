@@ -1,16 +1,6 @@
-(* A2A protocol v1.0 data model.
-
-   Mirrors the messages of [specification/a2a.proto] (lf.a2a.v1) that a
-   client needs. JSON conversion lives in [Codec]; nothing here depends on
-   the wire format except the free-form [json] values (Struct / Value in
-   the proto), which are inherently untyped. *)
-
 type json = Yojson.Safe.t
-(** Arbitrary JSON, used only where the protocol itself is untyped
-    ([google.protobuf.Struct] metadata and [google.protobuf.Value] data). *)
 
 type metadata = (string * json) list
-(** A JSON object ([google.protobuf.Struct]). *)
 
 module Role = struct
   type t = Unspecified | User | Agent
@@ -62,7 +52,6 @@ module Task_state = struct
 
   let of_string s = List.find_opt (fun st -> to_string st = s) all
 
-  (* Proto enum numbers, accepted by ProtoJSON parsers. *)
   let of_int = function
     | 0 -> Some Unspecified
     | 1 -> Some Submitted
@@ -77,28 +66,22 @@ module Task_state = struct
 
   let pp ppf t = Format.pp_print_string ppf (to_string t)
 
-  (** completed / failed / canceled / rejected: the task will not change
-      any more and accepts no further messages. *)
   let is_terminal = function
     | Completed | Failed | Canceled | Rejected -> true
     | Unspecified | Submitted | Working | Input_required | Auth_required ->
         false
 
-  (** input-required / auth-required: the agent is waiting for the
-      client. *)
   let is_interrupted = function
     | Input_required | Auth_required -> true
     | _ -> false
 
-  (** The task is still being processed by the agent; polling or
-      streaming may yield further updates. *)
   let is_active t = not (is_terminal t || is_interrupted t)
 end
 
 module Part = struct
   type content =
     | Text of string
-    | Raw of string  (** decoded bytes; base64 on the wire *)
+    | Raw of string
     | Url of string
     | Data of json
 
@@ -146,8 +129,6 @@ module Message = struct
     { message_id; context_id; task_id; role; parts; metadata; extensions;
       reference_task_ids }
 
-  (** A client-to-agent message. A fresh UUID v4 [messageId] is generated
-      unless one is supplied. *)
   let user ?message_id ?context_id ?task_id ?metadata ?extensions
       ?reference_task_ids parts =
     make ?message_id ?context_id ?task_id ?metadata ?extensions
@@ -156,7 +137,6 @@ module Message = struct
   let user_text ?message_id ?context_id ?task_id ?metadata text =
     user ?message_id ?context_id ?task_id ?metadata [ Part.text text ]
 
-  (** Concatenation of all text parts, separated by newlines. *)
   let text t =
     List.filter_map Part.as_text t.parts |> String.concat "\n"
 end
@@ -205,9 +185,6 @@ module Task = struct
   let is_terminal t = Task_state.is_terminal (state t)
   let is_interrupted t = Task_state.is_interrupted (state t)
 
-  (** A user message continuing this task (e.g. answering
-      [TASK_STATE_INPUT_REQUIRED]). Carries the task's [taskId] and
-      [contextId] as required for multi-turn interactions. *)
   let follow_up ?message_id ?metadata t parts =
     Message.user ?message_id ?metadata ~task_id:t.id ?context_id:t.context_id
       parts
@@ -241,9 +218,6 @@ module Send_message_configuration = struct
     accepted_output_modes : string list;
     history_length : int option;
     return_immediately : bool;
-        (** [true]: the server returns right after creating the task.
-            [false] (default): the server waits until the task is terminal
-            or interrupted. *)
   }
 
   let make ?(accepted_output_modes = []) ?history_length
@@ -284,14 +258,12 @@ module Subscribe_to_task_request = struct
   type t = { tenant : string option; id : string }
 end
 
-(* ---- Agent discovery ---- *)
-
 module Agent_interface = struct
   type t = {
     url : string;
-    protocol_binding : string;  (** "JSONRPC", "GRPC", "HTTP+JSON" or a URI *)
+    protocol_binding : string;
     tenant : string option;
-    protocol_version : string;  (** "Major.Minor", e.g. "1.0" *)
+    protocol_version : string;
   }
 end
 
@@ -323,7 +295,6 @@ end
 
 module Security_requirement = struct
   type t = (string * string list) list
-  (** scheme name -> required scopes *)
 end
 
 module Agent_skill = struct
@@ -363,12 +334,12 @@ module Oauth_flow = struct
         authorization_url : string option;
         refresh_url : string option;
         scopes : scopes;
-      }  (** deprecated *)
+      }
     | Password of {
         token_url : string option;
         refresh_url : string option;
         scopes : scopes;
-      }  (** deprecated *)
+      }
     | Device_code of {
         device_authorization_url : string;
         token_url : string;
@@ -402,7 +373,6 @@ module Agent_card = struct
     name : string;
     description : string;
     supported_interfaces : Agent_interface.t list;
-        (** In preference order; the first entry is preferred. *)
     provider : Agent_provider.t option;
     version : string;
     documentation_url : string option;

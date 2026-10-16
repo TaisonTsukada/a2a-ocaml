@@ -1,5 +1,3 @@
-(* A2A client over the JSON-RPC binding. *)
-
 open Types
 
 let src = Logs.Src.create "a2a-client" ~doc:"A2A protocol client"
@@ -7,11 +5,9 @@ let src = Logs.Src.create "a2a-client" ~doc:"A2A protocol client"
 module Log = (val Logs.src_log src : Logs.LOG)
 
 let ( let* ) = Result.bind
-let protocol_version = "1.0"
+let protocol_version = Protocol_version.(to_string V1_0)
 
 module Auth = struct
-  (* Produces credential headers per request, so short-lived tokens can be
-     refreshed. Values are never logged. *)
   type t = unit -> (string * string) list
 
   let none : t = fun () -> []
@@ -33,6 +29,7 @@ type t = {
   stream_idle_timeout : float option;
   max_response_size : int;
   card : Agent_card.t option;
+  wire : Wire.t;
 }
 
 let default_timeout = 30.0
@@ -40,23 +37,19 @@ let default_max_response_size = 16 * 1024 * 1024
 
 let create ?(auth = Auth.none) ?(headers = []) ?tenant ?(extensions = [])
     ?(timeout = default_timeout) ?stream_idle_timeout
-    ?(max_response_size = default_max_response_size) ?card ~clock ~transport
-    endpoint =
+    ?(max_response_size = default_max_response_size) ?card
+    ?(protocol_version = Protocol_version.V1_0) ~clock ~transport endpoint =
   let timeout = Some timeout in
   { transport; clock = (clock :> Eio.Time.Mono.ty Eio.Resource.t); endpoint;
     tenant; auth; headers; extensions; timeout; stream_idle_timeout;
-    max_response_size; card }
+    max_response_size; card; wire = Wire.of_version protocol_version }
 
 let endpoint t = t.endpoint
 let agent_card t = t.card
+let version t = t.wire.version
 
-(* ---------- plumbing ---------- *)
-
-(* URL for logs: no userinfo, no query (either may carry credentials). *)
 let redact_uri u = Uri.with_query (Uri.with_userinfo u None) [] |> Uri.to_string
 
-(* Run a transport operation; anything it raises except cancellation is a
-   transport error. User callbacks never run inside [guard]. *)
 let guard what f =
   match f () with
   | v -> Ok v
@@ -74,7 +67,6 @@ let with_timeout clock secs what f =
 
 let read_buffer_size = 16 * 1024
 
-(* Read a body completely, bounded by [limit] bytes. *)
 let read_all ~limit (body : Eio.Flow.source_ty Eio.Resource.t) =
   let buf = Buffer.create 4096 in
   let cs = Cstruct.create read_buffer_size in
@@ -93,7 +85,6 @@ let read_all ~limit (body : Eio.Flow.source_ty Eio.Resource.t) =
 
 let excerpt_limit = 1024
 
-(* Bounded excerpt for HTTP errors; never fails. *)
 let http_error (resp : Transport.response) =
   let body =
     let cs = Cstruct.create excerpt_limit in
@@ -107,16 +98,19 @@ let http_error (resp : Transport.response) =
 let is_success status = status >= 200 && status < 300
 
 let request_headers t ~accept =
+  let extensions =
+    match t.extensions with
+    | [] -> []
+    | l -> List.map (fun name -> (name, String.concat "," l)) t.wire.extension_headers
+  in
   [ ("Content-Type", "application/json"); ("Accept", accept);
-    ("A2A-Version", protocol_version) ]
-  @ (match t.extensions with [] -> [] | l -> [ ("A2A-Extensions", String.concat "," l) ])
-  @ t.headers @ t.auth ()
+    ("A2A-Version", Protocol_version.to_string t.wire.version) ]
+  @ extensions @ t.headers @ t.auth ()
 
-(* ---------- unary JSON-RPC call ---------- *)
-
-let call t ~meth ~params ~(decode : 'a Json_decode.t) : ('a, Error.t) result =
+let call t (op : _ Wire.op) req =
+  let meth = op.meth in
   let id = Jsonrpc.new_id () in
-  let body = Yojson.Safe.to_string (Jsonrpc.request ~id ~meth params) in
+  let body = Yojson.Safe.to_string (Jsonrpc.request ~id ~meth (op.encode req)) in
   Log.debug (fun m -> m "%s -> %s (id %s)" meth (redact_uri t.endpoint) id);
   let result =
     with_timeout t.clock t.timeout meth @@ fun () ->
@@ -129,7 +123,7 @@ let call t ~meth ~params ~(decode : 'a Json_decode.t) : ('a, Error.t) result =
     if not (is_success resp.status) then Error (http_error resp)
     else
       let* body = read_all ~limit:t.max_response_size resp.body in
-      Jsonrpc.decode_response ~expected_id:id decode body
+      Jsonrpc.decode_response ~expected_id:id op.decode body
   in
   (match result with
    | Ok _ -> Log.debug (fun m -> m "%s <- ok (id %s)" meth id)
@@ -138,31 +132,23 @@ let call t ~meth ~params ~(decode : 'a Json_decode.t) : ('a, Error.t) result =
 
 let with_tenant t = function Some _ as x -> x | None -> t.tenant
 
-(* ---------- operations ---------- *)
-
 let send_message_request t ?tenant ?configuration ?metadata message =
   { Send_message_request.tenant = with_tenant t tenant; message; configuration; metadata }
 
 let send_message t ?tenant ?configuration ?metadata message =
   let req = send_message_request t ?tenant ?configuration ?metadata message in
-  call t ~meth:Jsonrpc.Method.send_message
-    ~params:(Codec.send_message_request_to_json req)
-    ~decode:Codec.send_message_response
+  call t t.wire.send_message req
 
 let send_text t ?context_id ?task_id ?configuration ?metadata text =
   send_message t ?configuration ?metadata (Message.user_text ?context_id ?task_id text)
 
 let get_task t ?tenant ?history_length id =
   let req = { Get_task_request.tenant = with_tenant t tenant; id; history_length } in
-  call t ~meth:Jsonrpc.Method.get_task ~params:(Codec.get_task_request_to_json req)
-    ~decode:Codec.task
+  call t t.wire.get_task req
 
 let cancel_task t ?tenant ?metadata id =
   let req = { Cancel_task_request.tenant = with_tenant t tenant; id; metadata } in
-  call t ~meth:Jsonrpc.Method.cancel_task ~params:(Codec.cancel_task_request_to_json req)
-    ~decode:Codec.task
-
-(* ---------- streaming ---------- *)
+  call t t.wire.cancel_task req
 
 type stream_state = { task : Task.t option; message : Message.t option }
 
@@ -178,9 +164,6 @@ let outcome st =
   | None, Some m -> Lifecycle.Outcome.Message m
   | None, None -> assert false
 
-(* After this event the agent will send nothing more. Interrupted states
-   are not final: the agent SHOULD keep the stream open while waiting for
-   out-of-band authorization (spec §7.6.1). *)
 let finished st =
   match (st.task, st.message) with
   | Some task, _ -> Task_state.is_terminal task.status.state
@@ -193,17 +176,18 @@ let capability_check t =
       Error (Error.Unsupported_capability "the Agent Card does not declare streaming support")
   | _ -> Ok ()
 
-let decode_event ~id data =
+let decode_event decode ~id data =
   let* json = Jsonrpc.parse_json data in
   let* result = Jsonrpc.parse_response ~expected_id:id json in
   Result.map_error
     (fun e -> Error.Invalid_response (Json_decode.error_to_string (Json_decode.under "result" e)))
-    (Codec.stream_response result)
+    (decode result)
 
-let stream t ~meth ~params ~on_event : (Lifecycle.Outcome.t, Error.t) result =
+let stream t (op : _ Wire.op) req ~on_event : (Lifecycle.Outcome.t, Error.t) result =
   let* () = capability_check t in
+  let meth = op.meth in
   let id = Jsonrpc.new_id () in
-  let body = Yojson.Safe.to_string (Jsonrpc.request ~id ~meth params) in
+  let body = Yojson.Safe.to_string (Jsonrpc.request ~id ~meth (op.encode req)) in
   Log.debug (fun m -> m "%s -> %s (id %s, streaming)" meth (redact_uri t.endpoint) id);
   Eio.Switch.run @@ fun sw ->
   let req =
@@ -211,9 +195,6 @@ let stream t ~meth ~params ~on_event : (Lifecycle.Outcome.t, Error.t) result =
       headers = request_headers t ~accept:"text/event-stream" @ [ ("Cache-Control", "no-store") ];
       body = Some body }
   in
-  (* The response headers, and a non-stream body (HTTP or JSON-RPC error
-     reply), are bounded by [timeout]; the stream itself only by
-     [stream_idle_timeout]. *)
   let* resp =
     with_timeout t.clock t.timeout (meth ^ " response") @@ fun () ->
     let* resp = guard "sending request" (fun () -> t.transport ~sw req) in
@@ -246,13 +227,10 @@ let stream t ~meth ~params ~on_event : (Lifecycle.Outcome.t, Error.t) result =
         let rec handle_events = function
           | [] -> Ok `Continue
           | ({ event_type = Some typ; _ } : Sse.event) :: rest when typ <> "message" && typ <> "error" ->
-              (* A2A defines no other event types; such events are not for us. *)
               Log.debug (fun m -> m "%s: ignoring SSE event of type %S" meth typ);
               handle_events rest
           | (ev : Sse.event) :: rest ->
-              let* sr = decode_event ~id ev.data in
-              (* [on_event] runs outside [guard]: its exceptions propagate
-                 and the switch closes the connection. *)
+              let* sr = decode_event op.decode ~id ev.data in
               deliver sr;
               if finished !state then Ok `Done else handle_events rest
         in
@@ -274,24 +252,18 @@ let stream t ~meth ~params ~on_event : (Lifecycle.Outcome.t, Error.t) result =
         Log.debug (fun m -> m "%s stream closed (id %s)" meth id);
         r
     | `Single body ->
-        (* Not a stream: typically an immediate JSON-RPC error (e.g. the
-           agent rejects the request before streaming). *)
-        let* sr = decode_event ~id body in
+        let* sr = decode_event op.decode ~id body in
         deliver sr;
         if settled !state then Ok (outcome !state)
         else Error (Error.Stream_ended { last_task = !state.task })
 
 let send_streaming_message t ?tenant ?configuration ?metadata ?(on_event = ignore) message =
   let req = send_message_request t ?tenant ?configuration ?metadata message in
-  stream t ~meth:Jsonrpc.Method.send_streaming_message
-    ~params:(Codec.send_message_request_to_json req) ~on_event
+  stream t t.wire.send_streaming_message req ~on_event
 
 let subscribe_to_task t ?tenant ?(on_event = ignore) id =
   let req = { Subscribe_to_task_request.tenant = with_tenant t tenant; id } in
-  stream t ~meth:Jsonrpc.Method.subscribe_to_task
-    ~params:(Codec.subscribe_to_task_request_to_json req) ~on_event
-
-(* ---------- task lifecycle ---------- *)
+  stream t t.wire.subscribe_to_task req ~on_event
 
 let poll ~clock ~interval ~max_interval ~backoff ~last fetch =
   let rec loop delay =
@@ -340,8 +312,6 @@ let send_message_and_wait t ?tenant ?configuration ?metadata ?history_length
   | Ok r -> r
   | Error `Timeout -> Error (Error.Poll_timeout { last_task = !last })
 
-(* ---------- discovery ---------- *)
-
 let well_known_path = "/.well-known/agent-card.json"
 
 let agent_card_uri base =
@@ -372,20 +342,19 @@ let fetch_agent_card ?(auth = Auth.none) ?(headers = []) ?(timeout = default_tim
     Codec.decode_string Codec.agent_card body
     |> Result.map_error (fun msg -> Error.Invalid_response ("Agent Card " ^ msg))
 
-let is_v1 version =
-  match String.split_on_char '.' version with "1" :: _ -> true | _ -> false
-
-(* Spec §8.3.2: first JSON-RPC interface in preference order. Protocol
-   versions other than 1.x are rejected rather than silently used
-   (spec §3.6.3). *)
-let select_interface (card : Agent_card.t) =
-  match
-    List.find_opt
+let select ?protocol_version (card : Agent_card.t) =
+  let wanted = match protocol_version with Some v -> [ v ] | None -> Protocol_version.supported in
+  let for_version v =
+    List.find_map
       (fun (i : Agent_interface.t) ->
-        String.uppercase_ascii i.protocol_binding = "JSONRPC" && is_v1 i.protocol_version)
+        if String.uppercase_ascii i.protocol_binding = "JSONRPC"
+           && Protocol_version.of_string i.protocol_version = Some v
+        then Some (i, v)
+        else None)
       card.supported_interfaces
-  with
-  | Some i -> Ok i
+  in
+  match List.find_map for_version wanted with
+  | Some found -> Ok found
   | None ->
       let offered =
         card.supported_interfaces
@@ -393,19 +362,25 @@ let select_interface (card : Agent_card.t) =
                Printf.sprintf "%s %s" i.protocol_binding i.protocol_version)
         |> String.concat ", "
       in
+      let wanted =
+        List.map (fun v -> Protocol_version.to_string v ^ ".x") wanted |> String.concat " or "
+      in
       Error
         (Error.No_compatible_interface
-           (Printf.sprintf "need JSONRPC with protocol 1.x; agent offers [%s]" offered))
+           (Printf.sprintf "need JSONRPC with protocol %s; agent offers [%s]" wanted offered))
+
+let select_interface ?protocol_version card = Result.map fst (select ?protocol_version card)
 
 let of_agent_card ?auth ?headers ?extensions ?timeout ?stream_idle_timeout
-    ?max_response_size ~clock ~transport (card : Agent_card.t) =
-  let* iface = select_interface card in
+    ?max_response_size ?protocol_version ~clock ~transport (card : Agent_card.t) =
+  let* iface, version = select ?protocol_version card in
   Ok
     (create ?auth ?headers ?tenant:iface.tenant ?extensions ?timeout ?stream_idle_timeout
-       ?max_response_size ~card ~clock ~transport (Uri.of_string iface.url))
+       ?max_response_size ~card ~protocol_version:version ~clock ~transport
+       (Uri.of_string iface.url))
 
 let connect ?auth ?headers ?extensions ?timeout ?stream_idle_timeout ?max_response_size
-    ~clock ~transport base =
+    ?protocol_version ~clock ~transport base =
   let* card = fetch_agent_card ?auth ?headers ?timeout ?max_response_size ~clock ~transport base in
   of_agent_card ?auth ?headers ?extensions ?timeout ?stream_idle_timeout ?max_response_size
-    ~clock ~transport card
+    ?protocol_version ~clock ~transport card

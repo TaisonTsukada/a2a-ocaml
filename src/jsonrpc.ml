@@ -1,10 +1,7 @@
-(* JSON-RPC 2.0 envelopes for the A2A JSON-RPC binding (spec §9). *)
-
 module D = Json_decode
 
 let ( let* ) = Result.bind
 
-(* A2A v1.0 method names (PascalCase, spec §5.3). *)
 module Method = struct
   let send_message = "SendMessage"
   let send_streaming_message = "SendStreamingMessage"
@@ -34,12 +31,6 @@ let rpc_error : Error.rpc_error D.t =
 
 let invalid fmt = Printf.ksprintf (fun s -> Error (Error.Invalid_response s)) fmt
 
-(* Validate a response envelope and return its [result] member.
-
-   - [jsonrpc] must be "2.0";
-   - exactly one of [result] / [error] must be present;
-   - [id] must echo the request id; an error response may carry [null]
-     (the server could not read the id, JSON-RPC 2.0 §5). *)
 let parse_response ~expected_id (json : Yojson.Safe.t) :
     (Yojson.Safe.t, Error.t) result =
   match json with
@@ -78,7 +69,6 @@ let parse_json s =
   | j -> Ok j
   | exception Yojson.Json_error msg -> invalid "invalid JSON: %s" msg
 
-(* Parse a response body and decode its result with [d]. *)
 let decode_response ~expected_id (d : 'a D.t) body : ('a, Error.t) result =
   let* json = parse_json body in
   let* result = parse_response ~expected_id json in

@@ -1,10 +1,3 @@
-(* Interoperability check against a live A2A v1.0 agent, intended for the
-   reference agent shipped with the official TCK (a2a-tck/sut/a2a-python,
-   built on the official Python SDK). That agent picks its behaviour from
-   the messageId prefix.
-
-   Usage: dune exec interop/interop.exe -- http://localhost:9999 *)
-
 open A2a_client
 
 let failures = ref 0
@@ -21,10 +14,6 @@ let check name cond detail =
     Printf.printf "FAIL  %s: %s\n%!" name detail
   end
 
-(* The reference agent has scenarios that its own SDK rejects with
-   InvalidAgentResponseError (-32006): it enqueues a Task before replying
-   with a Message, and appends to an artifact it never created. The client
-   must surface that as a typed error; the scenario itself cannot pass. *)
 let xfail name = function
   | Error.Rpc_error { code = Invalid_agent_response; message; _ } ->
       Printf.printf "XFAIL %s: reference agent error: %s\n%!" name message;
@@ -46,17 +35,23 @@ let expect_task name r pred =
   | Ok (Message m) -> check name false ("got message " ^ Message.text m)
   | Error e -> check name false (Error.to_string e)
 
-let run ~clock ~transport base =
+let run ?protocol_version ~clock ~transport base =
   let client =
     match connect ~clock ~transport base with
     | Ok c -> c
     | Error e -> failwith ("connect: " ^ Error.to_string e)
   in
+  let client =
+    match protocol_version with
+    | Some v when v <> version client ->
+        create ~clock ~transport ~protocol_version:v ?card:(agent_card client) (A2a_client.endpoint client)
+    | _ -> client
+  in
+  Printf.printf "protocol %s\n%!" (Protocol_version.to_string (version client));
   let card = Option.get (agent_card client) in
   check "Agent Card fetched and parsed" (card.name <> "") card.name;
   check "JSON-RPC endpoint selected" true (Uri.to_string (A2a_client.endpoint client));
 
-  (* SendMessage: direct message *)
   (match send_message client (msg "tck-message-response" "hi") with
    | Ok (Send_message_response.Message m) ->
        check "SendMessage -> Message" (Message.text m = "Direct message response") (Message.text m)
@@ -64,11 +59,9 @@ let run ~clock ~transport base =
    | Error e when xfail "SendMessage -> Message" e -> ()
    | Error e -> check "SendMessage -> Message" false (Error.to_string e));
 
-  (* SendMessage: completed task with status message *)
   expect_task "SendMessage -> completed Task" (send_message client (msg "tck-complete-task" "hi"))
     (fun t -> Task.state t = Completed);
 
-  (* Artifacts of each part kind *)
   let artifact_part prefix =
     match send_message client (msg prefix "hi") with
     | Ok (Send_message_response.Task { artifacts = [ { parts = [ p ]; _ } ]; _ }) -> Some p
@@ -89,7 +82,6 @@ let run ~clock ~transport base =
        check "data artifact" (List.assoc_opt "key" kvs = Some (`String "value")) "content"
    | _ -> check "data artifact" false "unexpected");
 
-  (* Input required, then continue the same task *)
   (match send_message client (msg "tck-input-required" "book a flight") with
    | Ok (Send_message_response.Task t) when Task.state t = Input_required ->
        check "input-required state" true "";
@@ -100,7 +92,6 @@ let run ~clock ~transport base =
    | Ok _ -> check "input-required state" false "unexpected response"
    | Error e -> check "input-required state" false (Error.to_string e));
 
-  (* Agent-side failure surfaces as a JSON-RPC error, not an exception *)
   (match send_message client (msg "tck-reject-task" "x") with
    | Error (Error.Rpc_error e) -> check "agent error -> Rpc_error" true (Error.Code.to_string e.code)
    | Ok (Send_message_response.Task t) ->
@@ -109,7 +100,6 @@ let run ~clock ~transport base =
        check "agent error handled" false
          (match r with Error e -> Error.to_string e | Ok _ -> "message"));
 
-  (* GetTask *)
   (match send_message client (msg "tck-complete-task" "hi") with
    | Ok (Send_message_response.Task t) -> (
        match get_task client ~history_length:10 t.id with
@@ -117,13 +107,11 @@ let run ~clock ~transport base =
        | Error e -> check "GetTask" false (Error.to_string e))
    | _ -> check "GetTask" false "setup failed");
 
-  (* GetTask unknown -> TaskNotFoundError *)
   (match get_task client "does-not-exist" with
    | Error (Error.Rpc_error { code = Task_not_found; _ }) -> check "GetTask unknown -> TaskNotFoundError" true ""
    | Ok _ -> check "GetTask unknown -> TaskNotFoundError" false "found?"
    | Error e -> check "GetTask unknown -> TaskNotFoundError" false (Error.to_string e));
 
-  (* CancelTask on a terminal task -> TaskNotCancelableError *)
   (match send_message client (msg "tck-complete-task" "hi") with
    | Ok (Send_message_response.Task t) -> (
        match cancel_task client t.id with
@@ -132,7 +120,6 @@ let run ~clock ~transport base =
        | Error e -> check "CancelTask terminal -> TaskNotCancelableError" false (Error.to_string e))
    | _ -> check "CancelTask terminal" false "setup failed");
 
-  (* CancelTask on a running task *)
   let config = Send_message_configuration.make ~return_immediately:true () in
   (match send_message client ~configuration:config (msg "test-resubscribe-message-id" "slow") with
    | Ok (Send_message_response.Task t) -> (
@@ -142,7 +129,6 @@ let run ~clock ~transport base =
    | Ok _ -> check "CancelTask running" false "no task"
    | Error e -> check "CancelTask running" false (Error.to_string e));
 
-  (* returnImmediately + polling *)
   (match send_message client ~configuration:config (msg "test-resubscribe-message-id" "slow") with
    | Ok (Send_message_response.Task t) -> (
        check "returnImmediately -> active task" (Task_state.is_active (Task.state t)) (Task_state.to_string t.status.state);
@@ -151,7 +137,6 @@ let run ~clock ~transport base =
        | Error e -> check "wait_for_task" false (Error.to_string e))
    | _ -> check "returnImmediately" false "no task");
 
-  (* Streaming *)
   let stream name prefix expect =
     let kinds = ref [] in
     let r =
@@ -184,7 +169,6 @@ let run ~clock ~transport base =
     | Outcome.Input_required _ -> true
     | _ -> false);
 
-  (* SubscribeToTask on a running task *)
   (match send_message client ~configuration:config (msg "test-resubscribe-message-id" "slow") with
    | Ok (Send_message_response.Task t) -> (
        match subscribe_to_task client t.id with
@@ -193,7 +177,6 @@ let run ~clock ~transport base =
        | Error e -> check "SubscribeToTask" false (Error.to_string e))
    | _ -> check "SubscribeToTask" false "setup failed");
 
-  (* send_message_and_wait *)
   (match send_message_and_wait client ~timeout:20. (msg "tck-complete-task" "hi") with
    | Ok (Outcome.Completed _) -> check "send_message_and_wait" true ""
    | Ok o -> check "send_message_and_wait" false (describe_outcome o)
@@ -201,8 +184,15 @@ let run ~clock ~transport base =
 
 let () =
   let base = if Array.length Sys.argv > 1 then Sys.argv.(1) else "http://localhost:9999" in
+  let protocol_version =
+    if Array.length Sys.argv > 2 then
+      match Protocol_version.of_string Sys.argv.(2) with
+      | Some v -> Some v
+      | None -> failwith ("unsupported protocol version " ^ Sys.argv.(2))
+    else None
+  in
   Eio_main.run (fun env ->
-      run ~clock:(Eio.Stdenv.mono_clock env) ~transport:(Transport.cohttp (Eio.Stdenv.net env))
+      run ?protocol_version ~clock:(Eio.Stdenv.mono_clock env) ~transport:(Transport.cohttp (Eio.Stdenv.net env))
         (Uri.of_string base));
   if !failures > 0 then begin
     Printf.printf "%d check(s) failed\n" !failures;

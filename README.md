@@ -1,10 +1,10 @@
 # a2a-ocaml
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![A2A](https://img.shields.io/badge/A2A-v1.0-green.svg)](https://github.com/a2aproject/A2A/blob/v1.0.1/docs/specification.md)
+[![A2A](https://img.shields.io/badge/A2A-v1.0%20%7C%20v0.3-green.svg)](https://github.com/a2aproject/A2A/blob/v1.0.1/docs/specification.md)
 ![OCaml](https://img.shields.io/badge/OCaml-%E2%89%A5%205.1-orange.svg)
 
-A type-safe [A2A (Agent2Agent) Protocol](https://github.com/a2aproject/A2A) **v1.0** client for OCaml 5, built on [Eio](https://github.com/ocaml-multicore/eio) and [cohttp-eio](https://github.com/mirage/ocaml-cohttp).
+A type-safe [A2A (Agent2Agent) Protocol](https://github.com/a2aproject/A2A) **v1.0** client for OCaml 5, built on [Eio](https://github.com/ocaml-multicore/eio) and [cohttp-eio](https://github.com/mirage/ocaml-cohttp). It is backward compatible with **v0.3** agents: the version is negotiated from the Agent Card, and your code stays the same.
 
 [日本語版 README](README.ja.md)
 
@@ -18,7 +18,8 @@ match A2a_client.send_text client "Summarize this company's latest filings" with
 ## Features
 
 - **A2A v1.0 over JSON-RPC 2.0**: `SendMessage`, `SendStreamingMessage`, `GetTask`, `CancelTask`, `SubscribeToTask`.
-- **Agent discovery**: fetches `/.well-known/agent-card.json` and picks the JSON-RPC interface, including its `tenant`.
+- **Backward compatible with v0.3**: the same operations against v0.3 agents (`message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, `tasks/resubscribe`), with the same types and results.
+- **Agent discovery**: fetches `/.well-known/agent-card.json` (v1.0 or v0.3 layout) and picks the JSON-RPC interface and protocol version, including its `tenant`.
 - **Typed data model**: records for `AgentCard`, `Message`, `Part`, `Task`, `Artifact` and the streaming events, and variants for `TaskState`, `Role`, `Part` content and error codes.
 - **No exceptions on bad input**: every operation returns a `result`. Malformed JSON, schema violations and mismatched JSON-RPC ids become `Error`s that include the JSON path of the problem.
 - **Incremental SSE streaming**: each event reaches your callback as soon as it arrives, whatever the TCP chunking. Status and artifact updates are folded into a final `Task`.
@@ -63,7 +64,7 @@ let () =
       | Error e -> prerr_endline (A2a_client.Error.to_string e))
 ```
 
-`connect` reads the Agent Card from `<base>/.well-known/agent-card.json`. If you already know the JSON-RPC endpoint, use `A2a_client.create ~clock ~transport endpoint` instead.
+`connect` reads the Agent Card from `<base>/.well-known/agent-card.json` and chooses the protocol version (see [Protocol versions](#protocol-versions)). If you already know the JSON-RPC endpoint, use `A2a_client.create ~clock ~transport endpoint` instead.
 
 ## Usage
 
@@ -128,6 +129,34 @@ send_streaming_message client (Message.user_text "Write a report")
 - **Stopping and cleanup:** to stop early, cancel the calling fiber, for example with `Eio.Fiber.first` or `Eio.Time.with_timeout`. If `on_event` raises, the exception propagates to the caller. In every case the connection is closed.
 - **Capability check:** when the client was built from an Agent Card that does not declare `capabilities.streaming`, the call fails locally with `Unsupported_capability`.
 
+### Protocol versions
+
+The client speaks A2A 1.0 and 0.3. The version only changes the wire format; requests, results and errors use the same OCaml types, so the code above works with both.
+
+`connect` (and `of_agent_card`) picks the first JSON-RPC interface for protocol 1.x in the Agent Card. If the card has none, it picks the first one for 0.3.x. Cards in the v0.3 layout (`url`, `preferredTransport`, `additionalInterfaces`, `protocolVersion`) are read as well. Other versions are never used; the call fails with `No_compatible_interface`.
+
+```ocaml
+let client = connect ~clock ~transport base |> Result.get_ok in
+match A2a_client.version client with
+| V1_0 -> print_endline "talking A2A 1.0"
+| V0_3 -> print_endline "talking A2A 0.3"
+
+(* Only accept 1.0: *)
+connect ~protocol_version:V1_0 ~clock ~transport base
+
+(* Known v0.3 endpoint, no Agent Card: *)
+create ~protocol_version:V0_3 ~clock ~transport (Uri.of_string "https://agent.example.com/a2a")
+```
+
+With protocol 0.3:
+
+- the methods are `message/send`, `message/stream`, `tasks/get`, `tasks/cancel` and `tasks/resubscribe`;
+- `return_immediately` is sent as `blocking` (its negation);
+- extensions go in both `A2A-Extensions` and `X-A2A-Extensions`;
+- `tenant` is not sent, because 0.3 has no such field;
+- the media type of text and data parts is not sent, because 0.3 has no field for it;
+- non-object data parts are wrapped as `{"value": …}` with metadata `data_part_compat: true`, the convention of the official SDKs. They are unwrapped on the way back.
+
 ### Configuration and authentication
 
 ```ocaml
@@ -135,6 +164,7 @@ A2a_client.create ~clock ~transport
   ~auth:(Auth.bearer token)                   (* or Auth.header "X-API-Key" key, Auth.dynamic f *)
   ~headers:[ ("X-Request-Source", "my-service") ]
   ~extensions:[ "https://example.com/ext/v1" ]  (* sent as A2A-Extensions *)
+  ~protocol_version:V1_0                      (* or V0_3; default V1_0 *)
   ~tenant:"acme"
   ~timeout:30.                                (* unary calls and stream headers; default 30 s *)
   ~stream_idle_timeout:120.                   (* max silence on a stream; default none *)
@@ -143,7 +173,7 @@ A2a_client.create ~clock ~transport
 ```
 
 - `Auth.dynamic` runs before every request, so it can refresh OAuth tokens.
-- `A2A-Version: 1.0` is always sent.
+- Every request carries the client's protocol version in `A2A-Version` (`1.0` or `0.3`).
 
 ### HTTPS
 
@@ -193,21 +223,23 @@ Every operation returns `(_, A2a_client.Error.t) result`. The only exception tha
 | `Invalid_response msg` | Bad JSON, a JSON-RPC envelope violation, a schema violation (for example `at $.result.task.status.state: unknown TaskState "done"`) or an oversized body |
 | `Stream_ended { last_task }` | The stream closed before the task settled |
 | `Poll_timeout { last_task }` | Polling gave up |
-| `No_compatible_interface`, `Unsupported_capability` | Checked locally against the Agent Card |
+| `No_compatible_interface`, `Unsupported_capability` | Checked locally against the Agent Card. `No_compatible_interface` means there is no JSON-RPC interface for protocol 1.x or 0.3.x |
 
 ## Protocol compatibility
 
 | | |
 | --- | --- |
 | Protocol | A2A **1.0**: [specification v1.0.1](https://github.com/a2aproject/A2A/blob/v1.0.1/docs/specification.md), [`a2a.proto`](https://github.com/a2aproject/A2A/blob/v1.0.1/specification/a2a.proto) (`lf.a2a.v1`) |
+| Backward compatibility | A2A **0.3**: [specification v0.3.0](https://github.com/a2aproject/A2A/blob/v0.3.0/docs/specification.md), [JSON schema](https://github.com/a2aproject/A2A/blob/v0.3.0/specification/json/a2a.json) |
 | Binding | JSON-RPC 2.0 over HTTP, with Server-Sent Events for streaming |
-| Wire format | ProtoJSON: camelCase fields, `TASK_STATE_*` / `ROLE_*` enum names, oneofs discriminated by member name |
-| Older versions | Not supported. v0.2/v0.3 shapes (`message/send`, `kind`, lowercase states) are rejected. Agents that only offer v0.3 get `No_compatible_interface`; the client never falls back silently (spec §3.6.3) |
+| Wire format | 1.0: ProtoJSON (camelCase fields, `TASK_STATE_*` / `ROLE_*` enum names, oneofs discriminated by member name). 0.3: `kind`-tagged objects and lowercase enums (`working`, `input-required`, `user`) |
+| Older versions | v0.2 and earlier are not supported. Agents that only offer them get `No_compatible_interface`; the client never falls back to a version it does not implement (spec §3.6.3) |
 
 These choices follow the official SDKs:
 
 - **Decoding:** unknown fields are ignored and absent scalars take their default value, as in ProtoJSON. The fields the client depends on are validated: task `id` and `status.state`, event `taskId`, exactly one kind of `Part` content, and exactly one payload in `SendMessageResponse` and `StreamResponse`.
-- **Enums:** both enum names and enum numbers are accepted.
+- **Enums:** in 1.0, both enum names and enum numbers are accepted. In 0.3, the state `unknown` maps to `Unspecified`.
+- **0.3 leniency:** a missing `kind` is inferred from the fields. A timestamp without a time zone is read as UTC; one that cannot be parsed is dropped instead of failing the event. `final` on status updates is ignored, because the end of a stream follows from the task state, as in 1.0. A v0.3 `OAuthFlows` with several flows keeps the first, in the order authorization code, client credentials, implicit, password.
 - **SSE event types:** SSE events of types other than `message` or `error` are ignored. The payload of an `event: error` is decoded as a JSON-RPC error.
 - **Non-SSE replies:** if a streaming request gets an `application/json` reply, the client treats it as a single JSON-RPC response. This is usually an error raised before the stream started.
 
@@ -217,14 +249,14 @@ These choices follow the official SDKs:
 | --- | --- |
 | `A2a_client` | Client operations, discovery and polling. Also re-exports the data model |
 | `Types` | Protocol data model |
-| `Codec` | ProtoJSON encoders and decoders |
-| `Jsonrpc` | JSON-RPC 2.0 envelopes and response validation |
-| `Sse` | Pure, incremental Server-Sent Events parser (WHATWG rules) |
+| `Codec` | JSON conversion for the 1.0 wire format; Agent Cards in either layout |
+| `Codec_v0_3` | JSON conversion for the 0.3 wire format |
+| `Protocol_version` | `V1_0` / `V0_3` |
 | `Transport` | HTTP abstraction and the cohttp-eio implementation |
 | `Lifecycle` | `Outcome` classification and folding stream events into a task |
 | `Error` | Error type and A2A error codes |
 
-The full API is documented in [`src/client.mli`](src/client.mli). To build HTML docs, run `dune build @doc`.
+The API reference is generated from the `.mli` files with `dune build @doc`.
 
 ## Examples
 
@@ -238,40 +270,6 @@ dune exec examples/a2a_cli.exe -- http://localhost:9999 get    TASK_ID
 A2A_TOKEN=... dune exec examples/a2a_cli.exe -- http://localhost:9999 cancel TASK_ID
 ```
 
-## Development
-
-```sh
-dune build
-dune runtest
-```
-
-The test suite covers:
-
-- codecs, JSON-RPC envelopes and the SSE parser, including every possible chunk split;
-- every client operation against a mock transport, on Eio's mock clock, including timeouts, polling, disconnects, cancellation and malformed responses;
-- an end-to-end run over loopback sockets with a cohttp-eio server.
-
-### Interoperability check
-
-The [A2A TCK](https://github.com/a2aproject/a2a-tck) validates agents, not clients. To check this client against an official implementation, `interop/` runs a set of scenarios against the TCK's reference agent, which is built on the [official Python SDK](https://github.com/a2aproject/a2a-python):
-
-```sh
-git clone https://github.com/a2aproject/a2a-python
-git clone https://github.com/a2aproject/a2a-tck
-(cd a2a-tck/sut/a2a-python && SUT_HOST=localhost:9999 uv run python sut_agent.py) &
-dune exec interop/interop.exe -- http://localhost:9999
-```
-
-Three scenarios are reported as XFAIL: the reference agent's own SDK rejects them with `InvalidAgentResponseError`. Mock tests cover those cases instead.
-
-### Releasing
-
-1. Update [`CHANGES.md`](CHANGES.md).
-2. Tag the release (`git tag v0.1.0 && git push --tags`).
-3. Publish it to [opam-repository](https://github.com/ocaml/opam-repository) with [`dune-release`](https://github.com/tarides/dune-release) (`dune-release tag`, `dune-release`) or [`opam-publish`](https://github.com/ocaml-opam/opam-publish).
-
-The `.opam` file is generated from `dune-project`; edit that file, not `a2a-client.opam`.
-
 ## Limitations
 
 Not supported yet:
@@ -283,9 +281,8 @@ Not supported yet:
 - HTTP caching of Agent Cards
 - connection pooling and keep-alive
 - automatic SSE reconnection with `Last-Event-ID`; use `subscribe_to_task` instead
+- A2A v0.2 and earlier, and the v0.3 methods for push notifications and `agent/getAuthenticatedExtendedCard`
 - server-side components (agent executor, task store); this is a client library
-
-Contributions are welcome.
 
 ## License
 

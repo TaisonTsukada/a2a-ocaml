@@ -1,4 +1,5 @@
 open A2a_client
+module Jsonrpc = A2a_client__Jsonrpc
 
 let parse = Yojson.Safe.from_string
 
@@ -51,7 +52,6 @@ let test_a2a_errors () =
       Alcotest.(check int) "to_int" n (Error.Code.to_int code))
     codes
 
-(* Spec §9.5 example; a null id is allowed for errors. *)
 let test_error_details () =
   let body =
     {|{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"Task not found","data":[

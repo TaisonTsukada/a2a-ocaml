@@ -1,7 +1,3 @@
-(* End-to-end over real loopback sockets: the cohttp-eio transport against
-   an in-process cohttp-eio server (chunked transfer encoding, SSE split
-   across writes, timeouts, cancellation). *)
-
 open A2a_client
 
 let card port =
@@ -27,7 +23,6 @@ let stream_body ~clock ~id =
                              `Assoc [ ("taskId", `String "t-1"); ("contextId", `String "c");
                                       ("status", `Assoc [ ("state", `String "TASK_STATE_COMPLETED") ]) ]) ])
   in
-  (* deliberately awkward 13-byte writes with pauses *)
   let rec split i acc =
     if i >= String.length text then List.rev acc
     else
@@ -57,7 +52,6 @@ let handler ~clock ~port ((_conn, req, body) : _ * Http.Request.t * _) =
             ~headers:(Http.Header.of_list [ ("content-type", "text/event-stream") ])
             ~status:`OK ~body:(stream_body ~clock ~id) ()
       | "SubscribeToTask" ->
-          (* one event, then silence *)
           Cohttp_eio.Server.respond
             ~headers:(Http.Header.of_list [ ("content-type", "text/event-stream") ])
             ~status:`OK
@@ -107,7 +101,6 @@ let test_timeout_and_cancel () =
   (match get_task client "t-1" with
    | Error (Error.Timeout _) -> ()
    | _ -> Alcotest.fail "expected Timeout");
-  (* Cancel a stream that is idle after its first event. *)
   let got = ref 0 in
   Eio.Fiber.first
     (fun () -> ignore (subscribe_to_task client ~on_event:(fun _ -> incr got) "t-1"))
@@ -115,7 +108,6 @@ let test_timeout_and_cancel () =
       let rec wait () = if !got = 0 then (Eio.Time.Mono.sleep clock 0.01; wait ()) in
       wait ());
   Alcotest.(check int) "received the first event, then cancelled" 1 !got;
-  (* Connection refused is a transport error, not an exception. *)
   let dead = create ~clock ~transport (Uri.of_string "http://127.0.0.1:1/rpc") in
   match send_text dead "x" with
   | Error (Error.Transport_error _) -> ()

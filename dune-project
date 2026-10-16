@@ -17,9 +17,9 @@
 
 (package
  (name a2a-client)
- (synopsis "A2A (Agent2Agent) protocol v1.0 client for OCaml 5 / Eio")
+ (synopsis "A2A (Agent2Agent) protocol client for OCaml 5 / Eio (v1.0, v0.3 compatible)")
  (description
-  "Type-safe client for the A2A (Agent2Agent) protocol v1.0, using the JSON-RPC binding over cohttp-eio. Supports Agent Card discovery, SendMessage, GetTask, CancelTask, SendStreamingMessage and SubscribeToTask with incremental Server-Sent Events parsing, and task lifecycle helpers with bounded polling.")
+  "Type-safe client for the A2A (Agent2Agent) protocol v1.0, backward compatible with v0.3 agents, using the JSON-RPC binding over cohttp-eio. Supports Agent Card discovery with protocol version negotiation, SendMessage, GetTask, CancelTask, SendStreamingMessage and SubscribeToTask with incremental Server-Sent Events parsing, and task lifecycle helpers with bounded polling.")
  (tags (a2a agent2agent agents ai json-rpc sse eio))
  (depends
   (ocaml (>= 5.1))

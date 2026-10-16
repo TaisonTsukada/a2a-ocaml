@@ -1,14 +1,11 @@
-(* Test doubles: a scripted response body and a recording transport. *)
-
 open A2a_client
 
-(* One step of a scripted body. *)
 type step =
-  | Chunk of string  (** delivered by one or more reads *)
-  | Sleep of float  (** wait on the mock clock before the next step *)
-  | Check of (unit -> unit)  (** run an assertion before continuing *)
-  | Block  (** never deliver anything more (until cancelled) *)
-  | Raise of exn  (** connection failure *)
+  | Chunk of string
+  | Sleep of float
+  | Check of (unit -> unit)
+  | Block
+  | Raise of exn
 
 module Scripted = struct
   type t = {
@@ -54,7 +51,7 @@ type reply = {
   status : int;
   headers : (string * string) list;
   body : step list;
-  delay : float;  (** before the response headers arrive *)
+  delay : float;
 }
 
 let reply ?(status = 200) ?(headers = [ ("content-type", "application/json") ]) ?(delay = 0.)
@@ -67,14 +64,11 @@ let sse_reply ?(status = 200) steps =
   reply ~status ~headers:[ ("content-type", "text/event-stream; charset=utf-8") ] steps
 
 type recorder = {
-  mutable requests : Transport.request list;  (** newest first *)
+  mutable requests : Transport.request list;
   mutable opened : int;
   mutable released : int;
 }
 
-(* [handler] answers each request; it may inspect the request (e.g. to echo
-   its JSON-RPC id). Every request registers a release hook on [sw], like a
-   real socket would. *)
 let transport ~clock (handler : Transport.request -> reply) =
   let r = { requests = []; opened = 0; released = 0 } in
   let t : Transport.t =
@@ -87,8 +81,6 @@ let transport ~clock (handler : Transport.request -> reply) =
     { Transport.status = rep.status; headers = rep.headers; body = source ~clock rep.body }
   in
   (t, r)
-
-(* JSON-RPC helpers. *)
 
 let request_json (req : Transport.request) =
   Yojson.Safe.from_string (Option.get req.body)

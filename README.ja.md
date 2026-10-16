@@ -1,10 +1,10 @@
 # a2a-ocaml
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-[![A2A](https://img.shields.io/badge/A2A-v1.0-green.svg)](https://github.com/a2aproject/A2A/blob/v1.0.1/docs/specification.md)
+[![A2A](https://img.shields.io/badge/A2A-v1.0%20%7C%20v0.3-green.svg)](https://github.com/a2aproject/A2A/blob/v1.0.1/docs/specification.md)
 ![OCaml](https://img.shields.io/badge/OCaml-%E2%89%A5%205.1-orange.svg)
 
-OCaml 5 向けの、型安全な [A2A (Agent2Agent) Protocol](https://github.com/a2aproject/A2A) **v1.0** クライアントです。[Eio](https://github.com/ocaml-multicore/eio) と [cohttp-eio](https://github.com/mirage/ocaml-cohttp) の上に構築しています。
+OCaml 5 向けの、型安全な [A2A (Agent2Agent) Protocol](https://github.com/a2aproject/A2A) **v1.0** クライアントです。[Eio](https://github.com/ocaml-multicore/eio) と [cohttp-eio](https://github.com/mirage/ocaml-cohttp) の上に構築しています。**v0.3** のエージェントとも後方互換で通信できます。バージョンは Agent Card から自動で選ばれ、利用側のコードは変わりません。
 
 [English README](README.md)
 
@@ -18,7 +18,8 @@ match A2a_client.send_text client "この企業の最新の開示資料を要約
 ## 特徴
 
 - **JSON-RPC 2.0 による A2A v1.0 対応**：`SendMessage`、`SendStreamingMessage`、`GetTask`、`CancelTask`、`SubscribeToTask` を実装しています。
-- **エージェントの発見**：`/.well-known/agent-card.json` から Agent Card を取得し、JSON-RPC interface（`tenant` を含む）を選びます。
+- **v0.3 との後方互換**：v0.3 のエージェントにも同じ操作（`message/send`、`message/stream`、`tasks/get`、`tasks/cancel`、`tasks/resubscribe`）を、同じ型と結果で行えます。
+- **エージェントの発見**：`/.well-known/agent-card.json` から Agent Card（v1.0 と v0.3 のどちらの形式でも可）を取得し、JSON-RPC interface とプロトコルバージョン（`tenant` を含む）を選びます。
 - **型付きデータモデル**：`AgentCard`、`Message`、`Part`、`Task`、`Artifact`、ストリーミングイベントを record で表します。`TaskState`、`Role`、`Part` の内容、エラーコードは variant です。
 - **不正な入力で例外を投げない**：すべての操作が `result` を返します。不正な JSON、スキーマ違反、JSON-RPC の ID 不一致は、問題箇所の JSON パスを含む `Error` になります。
 - **逐次処理の SSE ストリーミング**：TCP のチャンク境界に関係なく、イベントが届いた時点でコールバックを呼びます。status と artifact の更新は最終的な `Task` に畳み込みます。
@@ -63,7 +64,7 @@ let () =
       | Error e -> prerr_endline (A2a_client.Error.to_string e))
 ```
 
-`connect` は `<base>/.well-known/agent-card.json` から Agent Card を読み込みます。JSON-RPC のエンドポイントが分かっている場合は、代わりに `A2a_client.create ~clock ~transport endpoint` を使えます。
+`connect` は `<base>/.well-known/agent-card.json` から Agent Card を読み込み、プロトコルバージョンを選びます（[プロトコルバージョン](#プロトコルバージョン)を参照）。JSON-RPC のエンドポイントが分かっている場合は、代わりに `A2a_client.create ~clock ~transport endpoint` を使えます。
 
 ## 使い方
 
@@ -128,6 +129,34 @@ send_streaming_message client (Message.user_text "レポートを書いて")
 - **中断と後始末：** 途中で止めるには、呼び出し側のファイバーをキャンセルします（`Eio.Fiber.first`、`Eio.Time.with_timeout` など）。`on_event` が例外を投げた場合、その例外は呼び出し元に伝播します。どの場合も接続は閉じられます。
 - **capability の確認：** `capabilities.streaming` を宣言していない Agent Card からクライアントを作った場合、リクエストを送らずに `Unsupported_capability` を返します。
 
+### プロトコルバージョン
+
+クライアントは A2A 1.0 と 0.3 を話せます。バージョンによって変わるのは通信形式だけで、リクエスト・結果・エラーは同じ OCaml の型を使います。上のコードはどちらのバージョンでもそのまま動きます。
+
+`connect`（と `of_agent_card`）は、Agent Card の中からプロトコル 1.x の JSON-RPC interface を先頭から探して選びます。1.x がなければ、0.3.x の JSON-RPC interface を選びます。v0.3 形式の Agent Card（`url`、`preferredTransport`、`additionalInterfaces`、`protocolVersion`）も読み込めます。それ以外のバージョンは使わず、`No_compatible_interface` を返します。
+
+```ocaml
+let client = connect ~clock ~transport base |> Result.get_ok in
+match A2a_client.version client with
+| V1_0 -> print_endline "A2A 1.0 で通信中"
+| V0_3 -> print_endline "A2A 0.3 で通信中"
+
+(* 1.0 だけを許可する場合 *)
+connect ~protocol_version:V1_0 ~clock ~transport base
+
+(* Agent Card なしで、v0.3 のエンドポイントに直接つなぐ場合 *)
+create ~protocol_version:V0_3 ~clock ~transport (Uri.of_string "https://agent.example.com/a2a")
+```
+
+プロトコル 0.3 では、次のように扱います。
+
+- メソッド名は `message/send`、`message/stream`、`tasks/get`、`tasks/cancel`、`tasks/resubscribe` です。
+- `return_immediately` は、その否定の `blocking` として送ります。
+- 拡張機能は `A2A-Extensions` と `X-A2A-Extensions` の両方のヘッダーで送ります。
+- `tenant` は送りません。0.3 にはこのフィールドがないためです。
+- テキストパートとデータパートのメディアタイプは送りません。0.3 にはこれを表すフィールドがないためです。
+- オブジェクトでないデータパートは、公式 SDK の慣例に従って `{"value": …}` で包み、metadata に `data_part_compat: true` を付けて送ります。受信時には元に戻します。
+
 ### 設定と認証
 
 ```ocaml
@@ -135,6 +164,7 @@ A2a_client.create ~clock ~transport
   ~auth:(Auth.bearer token)                   (* または Auth.header "X-API-Key" key、Auth.dynamic f *)
   ~headers:[ ("X-Request-Source", "my-service") ]
   ~extensions:[ "https://example.com/ext/v1" ]  (* A2A-Extensions ヘッダーとして送信 *)
+  ~protocol_version:V1_0                      (* または V0_3。既定は V1_0 *)
   ~tenant:"acme"
   ~timeout:30.                                (* 単発呼び出しとストリームのヘッダー受信。既定 30 秒 *)
   ~stream_idle_timeout:120.                   (* ストリームの無通信許容時間。既定は無制限 *)
@@ -143,7 +173,7 @@ A2a_client.create ~clock ~transport
 ```
 
 - `Auth.dynamic` はリクエストのたびに呼ばれるので、OAuth トークンの更新に使えます。
-- `A2A-Version: 1.0` ヘッダーは常に送信します。
+- すべてのリクエストで、クライアントのプロトコルバージョンを `A2A-Version` ヘッダー（`1.0` または `0.3`）として送信します。
 
 ### HTTPS
 
@@ -193,21 +223,23 @@ let transport = A2a_client.Transport.cohttp ~https (Eio.Stdenv.net env)
 | `Invalid_response msg` | 不正な JSON、JSON-RPC エンベロープの違反、スキーマ違反（例：`at $.result.task.status.state: unknown TaskState "done"`）、サイズ超過 |
 | `Stream_ended { last_task }` | Task が確定する前にストリームが閉じた |
 | `Poll_timeout { last_task }` | ポーリングがタイムアウトした |
-| `No_compatible_interface`、`Unsupported_capability` | Agent Card をもとにローカルで判定したエラー |
+| `No_compatible_interface`、`Unsupported_capability` | Agent Card をもとにローカルで判定したエラー。`No_compatible_interface` は、プロトコル 1.x と 0.3.x のどちらの JSON-RPC interface もないことを表します |
 
 ## プロトコルの互換性
 
 | | |
 | --- | --- |
 | プロトコル | A2A **1.0**：[仕様 v1.0.1](https://github.com/a2aproject/A2A/blob/v1.0.1/docs/specification.md)、[`a2a.proto`](https://github.com/a2aproject/A2A/blob/v1.0.1/specification/a2a.proto)（`lf.a2a.v1`） |
+| 後方互換 | A2A **0.3**：[仕様 v0.3.0](https://github.com/a2aproject/A2A/blob/v0.3.0/docs/specification.md)、[JSON スキーマ](https://github.com/a2aproject/A2A/blob/v0.3.0/specification/json/a2a.json) |
 | バインディング | JSON-RPC 2.0 over HTTP。ストリーミングは Server-Sent Events |
-| ワイヤー形式 | ProtoJSON：camelCase のフィールド名、`TASK_STATE_*` / `ROLE_*` の enum 名、oneof はメンバー名で判別 |
-| 旧バージョン | 非対応。v0.2/v0.3 の形式（`message/send`、`kind`、小文字の状態名）は受け付けません。v0.3 しか提供しないエージェントには `No_compatible_interface` を返し、黙って旧バージョンにフォールバックすることはありません（仕様 §3.6.3） |
+| ワイヤー形式 | 1.0：ProtoJSON（camelCase のフィールド名、`TASK_STATE_*` / `ROLE_*` の enum 名、oneof はメンバー名で判別）。0.3：`kind` で種類を示すオブジェクトと、小文字の enum（`working`、`input-required`、`user`） |
+| 旧バージョン | v0.2 以前には対応していません。それしか提供しないエージェントには `No_compatible_interface` を返し、実装していないバージョンに黙ってフォールバックすることはありません（仕様 §3.6.3） |
 
 以下の点は公式 SDK の挙動に合わせています。
 
 - **デコード：** ProtoJSON と同様に、未知のフィールドは無視し、欠けたスカラー値は既定値として扱います。クライアントの動作に必要なフィールドは検証します。対象は、Task の `id` と `status.state`、イベントの `taskId`、`Part` の内容がちょうど 1 種類であること、`SendMessageResponse` と `StreamResponse` のペイロードがちょうど 1 つであることです。
-- **enum：** 名前と数値の両方を受け付けます。
+- **enum：** 1.0 では名前と数値の両方を受け付けます。0.3 の状態 `unknown` は `Unspecified` として扱います。
+- **0.3 での寛容な扱い：** `kind` がない場合はフィールドから種類を推定します。タイムゾーンのないタイムスタンプは UTC として読み、解釈できないタイムスタンプはイベント全体を失敗させずに捨てます。status 更新の `final` は使いません。1.0 と同じく、ストリームの終わりは Task の状態で判断します。複数のフローを持つ v0.3 の `OAuthFlows` は、authorization code、client credentials、implicit、password の順で最初のものだけを残します。
 - **SSE のイベント型：** `message` と `error` 以外の型のイベントは無視します。`event: error` のデータは JSON-RPC エラーとして解釈します。
 - **SSE 以外の応答：** ストリーミング要求に `application/json` が返ってきた場合は、単一の JSON-RPC 応答として扱います。通常はストリーム開始前に発生したエラーです。
 
@@ -217,14 +249,14 @@ let transport = A2a_client.Transport.cohttp ~https (Eio.Stdenv.net env)
 | --- | --- |
 | `A2a_client` | クライアントの操作、エージェントの発見、ポーリング。データモデルも再エクスポート |
 | `Types` | プロトコルのデータモデル |
-| `Codec` | ProtoJSON のエンコーダとデコーダ |
-| `Jsonrpc` | JSON-RPC 2.0 のエンベロープと応答の検証 |
-| `Sse` | 純粋な逐次 Server-Sent Events パーサー（WHATWG のルールに準拠） |
+| `Codec` | 1.0 のワイヤー形式の JSON 変換。Agent Card はどちらの形式も読めます |
+| `Codec_v0_3` | 0.3 のワイヤー形式の JSON 変換 |
+| `Protocol_version` | `V1_0` / `V0_3` |
 | `Transport` | HTTP の抽象化と cohttp-eio による実装 |
 | `Lifecycle` | `Outcome` による状態の分類と、ストリームイベントの Task への畳み込み |
 | `Error` | エラー型と A2A のエラーコード |
 
-API の詳細は [`src/client.mli`](src/client.mli) にあります。HTML ドキュメントは `dune build @doc` で生成できます。
+API リファレンスは `.mli` ファイルから `dune build @doc` で生成できます。
 
 ## 使用例
 
@@ -238,40 +270,6 @@ dune exec examples/a2a_cli.exe -- http://localhost:9999 get    TASK_ID
 A2A_TOKEN=... dune exec examples/a2a_cli.exe -- http://localhost:9999 cancel TASK_ID
 ```
 
-## 開発
-
-```sh
-dune build
-dune runtest
-```
-
-テストでは次のものを検証しています。
-
-- コーデック、JSON-RPC エンベロープ、SSE パーサー（あらゆるチャンク分割位置を含む）
-- 全クライアント操作を、モック Transport と Eio のモック時計の上で実行するテスト（タイムアウト、ポーリング、切断、キャンセル、不正な応答を含む）
-- cohttp-eio サーバーを相手に、ループバックソケット上で動かすエンドツーエンドのテスト
-
-### 相互運用性の確認
-
-[A2A TCK](https://github.com/a2aproject/a2a-tck) が検証するのはエージェントで、クライアントは対象外です。そこで、公式実装との互換性を確認するため、`interop/` で TCK の参照エージェント（[公式 Python SDK](https://github.com/a2aproject/a2a-python) 製）に対して一連のシナリオを実行します。
-
-```sh
-git clone https://github.com/a2aproject/a2a-python
-git clone https://github.com/a2aproject/a2a-tck
-(cd a2a-tck/sut/a2a-python && SUT_HOST=localhost:9999 uv run python sut_agent.py) &
-dune exec interop/interop.exe -- http://localhost:9999
-```
-
-3 つのシナリオは XFAIL として報告されます。参照エージェント自身の SDK が `InvalidAgentResponseError` で拒否するためです。これらのケースはモックテストで検証しています。
-
-### リリース手順
-
-1. [`CHANGES.md`](CHANGES.md) を更新します。
-2. リリースのタグを付けます（`git tag v0.1.0 && git push --tags`）。
-3. [`dune-release`](https://github.com/tarides/dune-release)（`dune-release tag`、`dune-release`）か [`opam-publish`](https://github.com/ocaml-opam/opam-publish) で [opam-repository](https://github.com/ocaml/opam-repository) に公開します。
-
-`.opam` ファイルは `dune-project` から生成されます。`a2a-client.opam` ではなく `dune-project` を編集してください。
-
 ## 制限事項
 
 次の機能にはまだ対応していません。
@@ -283,9 +281,8 @@ dune exec interop/interop.exe -- http://localhost:9999
 - Agent Card の HTTP キャッシュ
 - コネクションプールと keep-alive
 - `Last-Event-ID` を使った SSE の自動再接続。代わりに `subscribe_to_task` を使ってください
+- A2A v0.2 以前。v0.3 のプッシュ通知関連メソッドと `agent/getAuthenticatedExtendedCard`
 - サーバー側のコンポーネント（Agent Executor、Task Store）。このライブラリはクライアント専用です
-
-コントリビューションを歓迎します。
 
 ## ライセンス
 

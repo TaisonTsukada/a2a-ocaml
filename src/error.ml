@@ -1,26 +1,19 @@
-(* Errors returned by the client. Nothing in the public API raises on
-   network failures or malformed responses; everything surfaces here.
-   (Eio cancellation is the exception: it propagates as
-   [Eio.Cancel.Cancelled] as usual.) *)
-
-(* JSON-RPC error codes: JSON-RPC 2.0 standard codes plus the A2A-specific
-   mapping of spec §5.4. *)
 module Code = struct
   type t =
-    | Parse_error  (** -32700 *)
-    | Invalid_request  (** -32600 *)
-    | Method_not_found  (** -32601 *)
-    | Invalid_params  (** -32602 *)
-    | Internal_error  (** -32603 *)
-    | Task_not_found  (** -32001 *)
-    | Task_not_cancelable  (** -32002 *)
-    | Push_notification_not_supported  (** -32003 *)
-    | Unsupported_operation  (** -32004 *)
-    | Content_type_not_supported  (** -32005 *)
-    | Invalid_agent_response  (** -32006 *)
-    | Extended_agent_card_not_configured  (** -32007 *)
-    | Extension_support_required  (** -32008 *)
-    | Version_not_supported  (** -32009 *)
+    | Parse_error
+    | Invalid_request
+    | Method_not_found
+    | Invalid_params
+    | Internal_error
+    | Task_not_found
+    | Task_not_cancelable
+    | Push_notification_not_supported
+    | Unsupported_operation
+    | Content_type_not_supported
+    | Invalid_agent_response
+    | Extended_agent_card_not_configured
+    | Extension_support_required
+    | Version_not_supported
     | Other of int
 
   let of_int = function
@@ -75,8 +68,6 @@ module Code = struct
     | Other n -> Printf.sprintf "JSON-RPC error %d" n
 end
 
-(* [google.rpc.ErrorInfo] detail, the detail type A2A servers use to refine
-   errors (spec §9.5). *)
 type error_info = {
   reason : string;
   domain : string;
@@ -87,32 +78,18 @@ type rpc_error = {
   code : Code.t;
   message : string;
   details : Yojson.Safe.t list;
-      (** [error.data] entries, each an object with an ["@type"] key. A
-          non-array [data] is kept as a single element. *)
 }
 
 type t =
   | Rpc_error of rpc_error
-      (** The agent answered with a JSON-RPC error object. *)
   | Http_error of { status : int; body : string }
-      (** Non-2xx HTTP status. [body] is truncated to a short excerpt. *)
   | Transport_error of string
-      (** Connection / I/O failure (DNS, refused, reset, TLS, ...). *)
-  | Timeout of string  (** what timed out *)
+  | Timeout of string
   | Invalid_response of string
-      (** The response violates JSON-RPC 2.0 or the A2A schema (bad JSON,
-          id mismatch, missing fields, wrong content type, too large). *)
   | Stream_ended of { last_task : Types.Task.t option }
-      (** The SSE stream closed before the task reached a terminal or
-          interrupted state. [last_task] is the state assembled so far;
-          resume with [subscribe_to_task] or [get_task]. *)
   | Poll_timeout of { last_task : Types.Task.t option }
-      (** [wait_for_task] gave up before the task settled. *)
   | No_compatible_interface of string
-      (** The Agent Card offers no JSON-RPC interface for protocol 1.x. *)
   | Unsupported_capability of string
-      (** Checked locally against the Agent Card before sending, e.g.
-          streaming when [capabilities.streaming] is not [true]. *)
 
 let error_info e =
   List.find_map

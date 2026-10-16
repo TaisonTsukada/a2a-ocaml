@@ -67,7 +67,6 @@ let test_request_omits_defaults () =
           "configuration":{"acceptedOutputModes":["text/plain"],"historyLength":0,"returnImmediately":true}}|})
     (Codec.send_message_request_to_json req)
 
-(* Spec §6.1 response body. *)
 let spec_task =
   {|{
     "task": {
@@ -120,11 +119,9 @@ let test_task_state_enum () =
       | Ok st' -> Alcotest.(check bool) (Task_state.to_string st) true (st = st')
       | Error _ -> Alcotest.fail "enum roundtrip")
     Task_state.all;
-  (* ProtoJSON also allows enum numbers. *)
   Alcotest.(check bool) "numeric" true (Codec.task_state (`Int 6) = Ok Task_state.Input_required);
   decode Codec.task {|{"id":"t","status":{"state":"completed"}}|}
   |> expect_error ~contains:"$.status.state: unknown TaskState";
-  (* v0.3 lowercase names must not be accepted silently. *)
   decode Codec.task {|{"id":"t","status":{"state":"working"}}|} |> expect_error ~contains:"unknown TaskState"
 
 let test_task_state_predicates () =
@@ -142,10 +139,8 @@ let test_part_errors () =
   decode Codec.part {|{"text":"a","url":"b"}|} |> expect_error ~contains:"multiple content";
   decode Codec.part {|{"raw":"***"}|} |> expect_error ~contains:"base64";
   decode Codec.part {|{"text":5}|} |> expect_error ~contains:"$.text: expected string";
-  (* data may be any JSON value, including null *)
   Alcotest.(check bool) "data null" true
     (match decode Codec.part {|{"data":null}|} with Ok { content = Data `Null; _ } -> true | _ -> false);
-  (* URL-safe base64 without padding is valid ProtoJSON bytes *)
   Alcotest.(check bool) "urlsafe" true
     (match decode Codec.part {|{"raw":"AAH_"}|} with Ok { content = Raw "\000\001\xff"; _ } -> true | _ -> false)
 
@@ -174,12 +169,10 @@ let test_stream_response_kinds () =
     (kind {|{"statusUpdate":{"taskId":"t","contextId":"c","status":{"state":"TASK_STATE_COMPLETED"}}}|});
   Alcotest.(check string) "artifact" "artifact"
     (kind {|{"artifactUpdate":{"taskId":"t","contextId":"c","artifact":{"artifactId":"a","parts":[{"text":"x"}]},"append":true,"lastChunk":false}}|});
-  (* v0.3 "kind" discriminator is not v1.0 *)
   Alcotest.(check bool) "legacy kind rejected" true
     (String.starts_with ~prefix:"error"
        (kind {|{"kind":"status-update","taskId":"t","status":{"state":"completed"}}|}))
 
-(* Spec §8.5 sample card, plus a security requirement in v1.0 form. *)
 let spec_card =
   {|{
   "name": "GeoSpatial Route Planner Agent",
@@ -243,7 +236,6 @@ let test_select_interface () =
     | Ok c -> c
     | Error e -> Alcotest.fail e
   in
-  (* Preference order is respected; v0.3 entries are skipped. *)
   (match
      select_interface
        (card
@@ -256,9 +248,22 @@ let test_select_interface () =
       Alcotest.(check string) "url" "http://new" i.url;
       Alcotest.(check (option string)) "tenant" (Some "t1") i.tenant
   | Error e -> Alcotest.fail (Error.to_string e));
-  match select_interface (card {|[{"url":"http://old","protocolBinding":"JSONRPC","protocolVersion":"0.3"}]|}) with
+  let v03_only = card {|[{"url":"http://grpc","protocolBinding":"GRPC","protocolVersion":"1.0"},
+                         {"url":"http://old","protocolBinding":"JSONRPC","protocolVersion":"0.3.0"}]|} in
+  (match select_interface v03_only with
+   | Ok i -> Alcotest.(check string) "0.3 fallback" "http://old" i.url
+   | Error e -> Alcotest.fail (Error.to_string e));
+  (match select_interface ~protocol_version:V1_0 v03_only with
+   | Error (Error.No_compatible_interface msg) ->
+       Alcotest.(check bool) "pinned 1.0" true (contains ~sub:"protocol 1.0.x;" msg)
+   | _ -> Alcotest.fail "expected No_compatible_interface");
+  match
+    select_interface
+      (card {|[{"url":"http://older","protocolBinding":"JSONRPC","protocolVersion":"0.2.5"},
+               {"url":"http://none","protocolBinding":"JSONRPC"}]|})
+  with
   | Error (Error.No_compatible_interface msg) ->
-      Alcotest.(check bool) "lists offers" true (contains ~sub:"JSONRPC 0.3" msg)
+      Alcotest.(check bool) "lists offers" true (contains ~sub:"JSONRPC 0.2.5" msg)
   | _ -> Alcotest.fail "expected No_compatible_interface"
 
 let tests =

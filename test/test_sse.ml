@@ -1,5 +1,4 @@
-open A2a_client
-
+module Sse = A2a_client__Sse
 
 let ev_t = Alcotest.(list (pair (pair (option string) string) (pair (option string) (option int))))
 let flat (e : Sse.event) = ((e.event_type, e.data), (e.id, e.retry))
@@ -31,11 +30,9 @@ let test_fields_and_comments () =
     (feed_all
        [ ": keep-alive comment\n";
          "event: update\nid: 42\nretry: 3000\nunknown: z\ndata: x\n\n";
-         (* id persists, type and retry reset *)
          "retry: soon\ndata: y\n\n" ])
 
 let test_value_spacing () =
-  (* only one leading space is removed; no colon = empty value *)
   Alcotest.check ev_t "spacing"
     [ one "x"; one " x"; one "" ]
     (feed_all [ "data:x\n\n"; "data:  x\n\n"; "data\n\n" ])
@@ -58,8 +55,6 @@ let test_bom () =
   Alcotest.check ev_t "BOM stripped" [ one "a" ] (feed_all [ "\xEF\xBB\xBFdata: a\n\n" ]);
   Alcotest.check ev_t "split BOM" [ one "a" ] (feed_all [ "\xEF"; "\xBB\xBFdata: a\n\n" ])
 
-(* The same stream split at every possible position, and byte by byte,
-   yields the same events: TCP chunking is irrelevant. *)
 let test_arbitrary_chunking () =
   let stream =
     ": hello\r\nevent: status\r\nid: 7\r\ndata: {\"a\":\r\ndata: 1}\r\n\r\ndata: second\n\ndata: third\r\rdata: é漢字\n\n"
@@ -74,7 +69,6 @@ let test_arbitrary_chunking () =
   Alcotest.check ev_t "byte by byte" expected (feed_all bytes)
 
 let test_crlf_split_across_chunks () =
-  (* CR at the end of a chunk, LF at the start of the next: one line end. *)
   Alcotest.check ev_t "CR|LF" [ one "a"; one "b" ]
     (feed_all [ "data: a\r"; "\n\r"; "\ndata: b\r\n\r\n" ])
 
@@ -104,4 +98,3 @@ let tests =
     ("CRLF split across chunks", `Quick, test_crlf_split_across_chunks);
     ("event too large", `Quick, test_event_too_large);
     ("unterminated line bounded", `Quick, test_line_without_newline_bounded) ]
-
