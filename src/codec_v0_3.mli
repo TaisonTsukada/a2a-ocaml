@@ -17,7 +17,12 @@
     - timestamps without a zone are read as UTC, and ones that cannot be
       parsed are dropped;
     - [final] on status updates is ignored when decoding; the task state
-      says whether a stream is over. *)
+      says whether a stream is over;
+    - a push notification config nests [id], [url], [token] and
+      [authentication] under [pushNotificationConfig], and authentication
+      lists [schemes] (joined with commas into [scheme] when decoded);
+    - there is no [ListTasks], and push notification configs are listed
+      without pagination. *)
 
 open Types
 
@@ -53,6 +58,14 @@ val send_message_response_to_json : Send_message_response.t -> json
 val stream_response : Stream_response.t decoder
 val stream_response_to_json : Stream_response.t -> json
 
+(** {1 Push notification configs} *)
+
+val task_push_notification_config : Task_push_notification_config.t decoder
+val task_push_notification_config_to_json : Task_push_notification_config.t -> json
+
+val list_task_push_notification_configs_response :
+  List_task_push_notification_configs_response.t decoder
+
 (** {1 Request parameters} *)
 
 val send_message_configuration_to_json : Send_message_configuration.t -> json
@@ -60,3 +73,9 @@ val send_message_request_to_json : Send_message_request.t -> json
 val get_task_request_to_json : Get_task_request.t -> json
 val cancel_task_request_to_json : Cancel_task_request.t -> json
 val subscribe_to_task_request_to_json : Subscribe_to_task_request.t -> json
+
+val task_push_notification_config_request_to_json :
+  Task_push_notification_config_request.t -> json
+
+val list_task_push_notification_configs_request_to_json :
+  List_task_push_notification_configs_request.t -> json

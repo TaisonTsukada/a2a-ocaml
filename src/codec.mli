@@ -47,6 +47,18 @@ val send_message_response_to_json : Send_message_response.t -> json
 val stream_response : Stream_response.t decoder
 val stream_response_to_json : Stream_response.t -> json
 
+(** {1 Push notification configs} *)
+
+val task_push_notification_config : Task_push_notification_config.t decoder
+val task_push_notification_config_to_json : Task_push_notification_config.t -> json
+
+val list_task_push_notification_configs_response :
+  List_task_push_notification_configs_response.t decoder
+
+(** {1 Task lists} *)
+
+val list_tasks_response : List_tasks_response.t decoder
+
 (** {1 Request parameters} *)
 
 val send_message_configuration_to_json : Send_message_configuration.t -> json
@@ -54,6 +66,15 @@ val send_message_request_to_json : Send_message_request.t -> json
 val get_task_request_to_json : Get_task_request.t -> json
 val cancel_task_request_to_json : Cancel_task_request.t -> json
 val subscribe_to_task_request_to_json : Subscribe_to_task_request.t -> json
+val list_tasks_request_to_json : List_tasks_request.t -> json
+
+val task_push_notification_config_request_to_json :
+  Task_push_notification_config_request.t -> json
+
+val list_task_push_notification_configs_request_to_json :
+  List_task_push_notification_configs_request.t -> json
+
+val get_extended_agent_card_request_to_json : Get_extended_agent_card_request.t -> json
 
 (** {1 Agent Card} *)
 

@@ -1,18 +1,10 @@
 open A2a_client
-
-let failures = ref 0
+open Report
 
 module Id_gen = struct
   let n = ref 0
   let next () = incr n; Printf.sprintf "%d-%.0f" !n (Unix.gettimeofday () *. 1000.)
 end
-
-let check name cond detail =
-  if cond then Printf.printf "PASS  %s\n%!" name
-  else begin
-    incr failures;
-    Printf.printf "FAIL  %s: %s\n%!" name detail
-  end
 
 let xfail name = function
   | Error.Rpc_error { code = Invalid_agent_response; message; _ } ->
@@ -22,22 +14,15 @@ let xfail name = function
 
 let msg prefix text = Message.user ~message_id:(prefix ^ "-" ^ Id_gen.next ()) [ Part.text text ]
 
-let describe_outcome = function
-  | Outcome.Message m -> "message: " ^ Message.text m
-  | o -> (
-      match Outcome.task o with
-      | Some t -> Printf.sprintf "task %s %s" t.id (Task_state.to_string t.status.state)
-      | None -> "?")
-
 let expect_task name r pred =
   match r with
   | Ok (Send_message_response.Task t) -> check name (pred t) (Task_state.to_string t.status.state)
   | Ok (Message m) -> check name false ("got message " ^ Message.text m)
   | Error e -> check name false (Error.to_string e)
 
-let run ?protocol_version ~clock ~transport base =
+let run ?protocol_version ?bindings ~clock ~transport base =
   let client =
-    match connect ~clock ~transport base with
+    match connect ?bindings ~clock ~transport base with
     | Ok c -> c
     | Error e -> failwith ("connect: " ^ Error.to_string e)
   in
@@ -50,7 +35,7 @@ let run ?protocol_version ~clock ~transport base =
   Printf.printf "protocol %s\n%!" (Protocol_version.to_string (version client));
   let card = Option.get (agent_card client) in
   check "Agent Card fetched and parsed" (card.name <> "") card.name;
-  check "JSON-RPC endpoint selected" true (Uri.to_string (A2a_client.endpoint client));
+  check (Protocol_binding.to_string (A2a_client.binding client) ^ " endpoint selected") true (Uri.to_string (A2a_client.endpoint client));
 
   (match send_message client (msg "tck-message-response" "hi") with
    | Ok (Send_message_response.Message m) ->
@@ -152,7 +137,7 @@ let run ?protocol_version ~clock ~transport base =
     in
     let kinds = String.concat " " (List.rev !kinds) in
     match r with
-    | Ok o -> check name (expect o) (kinds ^ " => " ^ describe_outcome o)
+    | Ok o -> check name (expect o) (kinds ^ " => " ^ describe o)
     | Error e when xfail name e -> ()
     | Error e -> check name false (kinds ^ " => " ^ Error.to_string e)
   in
@@ -173,29 +158,28 @@ let run ?protocol_version ~clock ~transport base =
    | Ok (Send_message_response.Task t) -> (
        match subscribe_to_task client t.id with
        | Ok (Outcome.Completed t') -> check "SubscribeToTask -> completed" (t'.id = t.id) t'.id
-       | Ok o -> check "SubscribeToTask" false (describe_outcome o)
+       | Ok o -> check "SubscribeToTask" false (describe o)
        | Error e -> check "SubscribeToTask" false (Error.to_string e))
    | _ -> check "SubscribeToTask" false "setup failed");
 
   (match send_message_and_wait client ~timeout:20. (msg "tck-complete-task" "hi") with
    | Ok (Outcome.Completed _) -> check "send_message_and_wait" true ""
-   | Ok o -> check "send_message_and_wait" false (describe_outcome o)
+   | Ok o -> check "send_message_and_wait" false (describe o)
    | Error e -> check "send_message_and_wait" false (Error.to_string e))
 
 let () =
   let base = if Array.length Sys.argv > 1 then Sys.argv.(1) else "http://localhost:9999" in
-  let protocol_version =
+  let protocol_version, bindings =
     if Array.length Sys.argv > 2 then
-      match Protocol_version.of_string Sys.argv.(2) with
-      | Some v -> Some v
-      | None -> failwith ("unsupported protocol version " ^ Sys.argv.(2))
-    else None
+      let arg = Sys.argv.(2) in
+      match (Protocol_binding.of_string arg, Protocol_version.of_string arg) with
+      | Some b, _ -> (None, Some [ b ])
+      | None, Some v -> (Some v, None)
+      | None, None -> failwith ("expected a protocol version or binding, got " ^ arg)
+    else (None, None)
   in
   Eio_main.run (fun env ->
-      run ?protocol_version ~clock:(Eio.Stdenv.mono_clock env) ~transport:(Transport.cohttp (Eio.Stdenv.net env))
+      run ?protocol_version ?bindings ~clock:(Eio.Stdenv.mono_clock env)
+        ~transport:(Transport.cohttp (Eio.Stdenv.net env))
         (Uri.of_string base));
-  if !failures > 0 then begin
-    Printf.printf "%d check(s) failed\n" !failures;
-    exit 1
-  end
-  else print_endline "all interop checks passed"
+  finish ()

@@ -65,7 +65,22 @@ module Code = struct
     | Extended_agent_card_not_configured -> "ExtendedAgentCardNotConfiguredError"
     | Extension_support_required -> "ExtensionSupportRequiredError"
     | Version_not_supported -> "VersionNotSupportedError"
-    | Other n -> Printf.sprintf "JSON-RPC error %d" n
+    | Other n -> Printf.sprintf "error %d" n
+
+  let reasons =
+    [ (Parse_error, "PARSE_ERROR"); (Invalid_request, "INVALID_REQUEST");
+      (Method_not_found, "METHOD_NOT_FOUND"); (Invalid_params, "INVALID_PARAMS");
+      (Internal_error, "INTERNAL_ERROR"); (Task_not_found, "TASK_NOT_FOUND");
+      (Task_not_cancelable, "TASK_NOT_CANCELABLE");
+      (Push_notification_not_supported, "PUSH_NOTIFICATION_NOT_SUPPORTED");
+      (Unsupported_operation, "UNSUPPORTED_OPERATION");
+      (Content_type_not_supported, "CONTENT_TYPE_NOT_SUPPORTED");
+      (Invalid_agent_response, "INVALID_AGENT_RESPONSE");
+      (Extended_agent_card_not_configured, "EXTENDED_AGENT_CARD_NOT_CONFIGURED");
+      (Extension_support_required, "EXTENSION_SUPPORT_REQUIRED");
+      (Version_not_supported, "VERSION_NOT_SUPPORTED") ]
+
+  let of_reason r = List.find_map (fun (c, s) -> if s = r then Some c else None) reasons
 end
 
 type error_info = {

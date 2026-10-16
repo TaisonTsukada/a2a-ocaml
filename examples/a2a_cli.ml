@@ -24,12 +24,15 @@ let () =
   match Array.to_list Sys.argv with
   | [ _; url; cmd; arg ] ->
       Eio_main.run @@ fun env ->
+      Eio.Switch.run @@ fun sw ->
       let clock = Eio.Stdenv.mono_clock env in
-      let transport = Transport.cohttp (Eio.Stdenv.net env) in
+      let transport = Transport.pooled ~sw ~clock (Eio.Stdenv.net env) in
       let auth = match Sys.getenv_opt "A2A_TOKEN" with Some t -> Auth.bearer t | None -> Auth.none in
       let result =
         let ( let* ) = Result.bind in
-        let* client = connect ~clock ~transport ~auth (Uri.of_string url) in
+        let* client =
+          connect ~clock ~transport ~auth ~reconnect:(Reconnect.make ()) (Uri.of_string url)
+        in
         match cmd with
         | "send" ->
             let* r = send_text client arg in
@@ -46,6 +49,14 @@ let () =
         | "cancel" ->
             let* t = cancel_task client arg in
             Ok (print_task t)
+        | "list" ->
+            let context_id = if arg = "-" then None else Some arg in
+            let rec page token =
+              let* r = list_tasks client ?context_id ?page_token:token () in
+              List.iter print_task r.tasks;
+              if r.next_page_token = "" then Ok () else page (Some r.next_page_token)
+            in
+            page None
         | _ -> Ok (prerr_endline ("unknown command " ^ cmd))
       in
       (match result with
@@ -54,5 +65,5 @@ let () =
            prerr_endline ("error: " ^ Error.to_string e);
            exit 1)
   | _ ->
-      prerr_endline "usage: a2a_cli URL (send|wait|stream|get|cancel) ARG";
+      prerr_endline "usage: a2a_cli URL (send|wait|stream|get|cancel|list) ARG";
       exit 2

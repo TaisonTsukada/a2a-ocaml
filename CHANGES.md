@@ -1,5 +1,32 @@
 ## 0.2.0 (unreleased)
 
+- HTTP+JSON (REST) binding for protocol 1.0, selected from the Agent Card
+  (`~bindings`) or with `create ~binding:Http_json`. REST errors
+  (`google.rpc.Status` with an `ErrorInfo` reason) become `Rpc_error`s with
+  the same codes as JSON-RPC errors. New module `Protocol_binding`, new
+  `binding` accessor, and `Error.Code.of_reason`.
+- `list_tasks` (`ListTasks`) with filters and cursor pagination.
+- Push notification configs: `create_task_push_notification_config`,
+  `get_…`, `list_…`, `delete_…`, and `push_notification_config` in
+  `Send_message_configuration` (also with protocol 0.3).
+- `get_extended_agent_card` (`GetExtendedAgentCard`, 0.3
+  `agent/getAuthenticatedExtendedCard`) and `with_agent_card`.
+- Stream resumption: `~reconnect:(Reconnect.make ())` re-attaches a broken
+  stream with `SubscribeToTask` (with `Last-Event-ID` and backoff), and
+  falls back to `GetTask` if the task ended meanwhile. Off by default.
+- `Transport.pooled`: HTTP/1.1 keep-alive connection pool scoped to a
+  `Switch`, with a retry on stale connections. Responses not read to the
+  end are drained in the background so their connections can be reused.
+- `Transport.meth` gains `` `DELETE ``; `Transport` has an interface file.
+- Capability checks against the Agent Card also cover push notifications
+  and the extended Agent Card.
+- `Error.Code.to_string (Other n)` is now `"error n"`, as it also covers
+  REST errors.
+- Behaviour change: `connect`, `of_agent_card` and `select_interface`
+  now also pick `HTTP+JSON` interfaces, in the card's order. Pass
+  `~bindings:[ Jsonrpc ]` to keep JSON-RPC only.
+- Breaking: `Send_message_configuration.t` has a new field
+  `push_notification_config`; build the record with `make`.
 - Backward compatibility with A2A v0.3. The protocol version is negotiated
   from the Agent Card (1.x preferred, then 0.3.x) or set with
   `~protocol_version`. Existing code needs no changes.

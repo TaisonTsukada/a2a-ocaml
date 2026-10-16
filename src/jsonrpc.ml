@@ -2,20 +2,12 @@ module D = Json_decode
 
 let ( let* ) = Result.bind
 
-module Method = struct
-  let send_message = "SendMessage"
-  let send_streaming_message = "SendStreamingMessage"
-  let get_task = "GetTask"
-  let cancel_task = "CancelTask"
-  let subscribe_to_task = "SubscribeToTask"
-end
-
 let new_id () = Id.uuid_v4 ()
 
 let request ~id ~meth (params : Yojson.Safe.t) : Yojson.Safe.t =
   `Assoc
-    [ ("jsonrpc", `String "2.0"); ("id", `String id); ("method", `String meth);
-      ("params", params) ]
+    ([ ("jsonrpc", `String "2.0"); ("id", `String id); ("method", `String meth) ]
+    @ if params = `Null then [] else [ ("params", params) ])
 
 let rpc_error : Error.rpc_error D.t =
   D.obj @@ fun kvs ->
@@ -76,3 +68,13 @@ let decode_response ~expected_id (d : 'a D.t) body : ('a, Error.t) result =
   | Ok v -> Ok v
   | Error e ->
       Error (Error.Invalid_response (D.error_to_string (D.under "result" e)))
+
+let op ~meth encode decode : _ Op.t =
+  let prepare req =
+    let id = new_id () in
+    let body = Yojson.Safe.to_string (request ~id ~meth (encode req)) in
+    { Op.meth = `POST; path = ""; query = []; body = Some body; content_type = "application/json";
+      accept = "application/json"; id = Some id; decode = decode_response ~expected_id:id decode;
+      error_of_body = None }
+  in
+  { name = meth; prepare }

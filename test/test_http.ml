@@ -31,11 +31,12 @@ let stream_body ~clock ~id =
   in
   Mock.source ~clock (split 0 [])
 
+let respond_json ?(headers = []) s =
+  Cohttp_eio.Server.respond_string
+    ~headers:(Http.Header.of_list (("content-type", "application/json") :: headers))
+    ~status:`OK ~body:s ()
+
 let handler ~clock ~port ((_conn, req, body) : _ * Http.Request.t * _) =
-  let respond_json s =
-    Cohttp_eio.Server.respond_string ~headers:(Http.Header.of_list [ ("content-type", "application/json") ])
-      ~status:`OK ~body:s ()
-  in
   match Http.Request.resource req with
   | "/.well-known/agent-card.json" -> respond_json (card port)
   | "/rpc" -> (
@@ -65,18 +66,23 @@ let handler ~clock ~port ((_conn, req, body) : _ * Http.Request.t * _) =
       | _ -> respond_json (Mock.error_envelope ~id:(`String id) (-32601) "Method not found"))
   | _ -> Cohttp_eio.Server.respond_string ~status:`Not_found ~body:"" ()
 
+let listen ~sw net =
+  let socket =
+    Eio.Net.listen ~sw ~backlog:16 ~reuse_addr:true net (`Tcp (Eio.Net.Ipaddr.V4.loopback, 0))
+  in
+  (socket, match Eio.Net.listening_addr socket with `Tcp (_, p) -> p | _ -> assert false)
+
+let serve ~sw net callback =
+  let socket, port = listen ~sw net in
+  let server = Cohttp_eio.Server.make ~callback:(fun conn req body -> callback ~port (conn, req, body)) () in
+  Eio.Fiber.fork_daemon ~sw (fun () -> Cohttp_eio.Server.run socket server ~on_error:(fun _ -> ()));
+  port
+
 let with_server f =
   Eio_main.run @@ fun env ->
   let clock = Eio.Stdenv.mono_clock env and net = Eio.Stdenv.net env in
   Eio.Switch.run @@ fun sw ->
-  let socket =
-    Eio.Net.listen ~sw ~backlog:16 ~reuse_addr:true net (`Tcp (Eio.Net.Ipaddr.V4.loopback, 0))
-  in
-  let port = match Eio.Net.listening_addr socket with `Tcp (_, p) -> p | _ -> assert false in
-  let server =
-    Cohttp_eio.Server.make ~callback:(fun conn req body -> handler ~clock ~port (conn, req, body)) ()
-  in
-  Eio.Fiber.fork_daemon ~sw (fun () -> Cohttp_eio.Server.run socket server ~on_error:(fun _ -> ()));
+  let port = serve ~sw net (handler ~clock) in
   let transport = Transport.cohttp net in
   f ~clock ~transport (Uri.of_string (Printf.sprintf "http://127.0.0.1:%d" port))
 

@@ -12,10 +12,10 @@ let check_invalid name r =
 let test_request_envelope () =
   Alcotest.(check string) "envelope"
     {|{"jsonrpc":"2.0","id":"abc","method":"SendMessage","params":{}}|}
-    (Yojson.Safe.to_string (Jsonrpc.request ~id:"abc" ~meth:Jsonrpc.Method.send_message (`Assoc [])));
-  Alcotest.(check (list string)) "v1.0 method names"
-    [ "SendMessage"; "SendStreamingMessage"; "GetTask"; "CancelTask"; "SubscribeToTask" ]
-    Jsonrpc.Method.[ send_message; send_streaming_message; get_task; cancel_task; subscribe_to_task ]
+    (Yojson.Safe.to_string (Jsonrpc.request ~id:"abc" ~meth:"SendMessage" (`Assoc [])));
+  Alcotest.(check string) "no params"
+    {|{"jsonrpc":"2.0","id":"abc","method":"GetExtendedAgentCard"}|}
+    (Yojson.Safe.to_string (Jsonrpc.request ~id:"abc" ~meth:"GetExtendedAgentCard" `Null))
 
 let test_result () =
   match Jsonrpc.parse_response ~expected_id:"1" (parse {|{"jsonrpc":"2.0","id":"1","result":{"x":1}}|}) with

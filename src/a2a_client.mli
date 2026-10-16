@@ -1,7 +1,8 @@
 (** A2A (Agent2Agent) protocol client for OCaml 5 / Eio.
 
-    Speaks protocol 1.0, and 0.3 with agents that have not moved to 1.0;
-    the version is negotiated from the Agent Card by {!connect}.
+    Speaks protocol 1.0 over the JSON-RPC and HTTP+JSON (REST) bindings,
+    and 0.3 over JSON-RPC with agents that have not moved to 1.0; the
+    version and binding are negotiated from the Agent Card by {!connect}.
 
     {[
       Eio_main.run @@ fun env ->
@@ -27,6 +28,7 @@ end
 (** {1 Supporting modules} *)
 
 module Protocol_version = Protocol_version
+module Protocol_binding = Protocol_binding
 module Error = Error
 module Transport = Transport
 module Lifecycle = Lifecycle

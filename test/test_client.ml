@@ -561,7 +561,7 @@ let test_connect () =
     Mock.transport ~clock (fun req ->
         match req.meth with
         | `GET -> Mock.json_reply card_json
-        | `POST ->
+        | `POST | `DELETE ->
             Mock.json_reply
               (Mock.result_envelope ~id:(Mock.request_id req) (`Assoc [ ("message", agent_message_json "ok") ])))
   in

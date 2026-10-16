@@ -7,6 +7,7 @@ type 'a decoder = 'a D.t
 
 let opt name f = function None -> [] | Some v -> [ (name, f v) ]
 let str name = opt name (fun s -> `String s)
+let int name = opt name (fun n -> `Int n)
 let str_list name = function [] -> [] | l -> [ (name, `List (List.map (fun s -> `String s) l)) ]
 let lst name f = function [] -> [] | l -> [ (name, `List (List.map f l)) ]
 let flag name b = if b then [ (name, `Bool true) ] else []
@@ -14,6 +15,7 @@ let metadata_json (m : metadata) : json = `Assoc m
 let meta name = opt name metadata_json
 
 let metadata : metadata decoder = D.assoc
+let empty : unit decoder = fun _ -> Ok ()
 let meta_field name kvs = D.field_opt name metadata kvs
 
 let enum what of_string of_int : 'a decoder = function

@@ -82,10 +82,54 @@ let stream_response_to_json : Stream_response.t -> json = function
   | Status_update e -> `Assoc [ ("statusUpdate", status_update_to_json e) ]
   | Artifact_update e -> `Assoc [ ("artifactUpdate", artifact_update_to_json e) ]
 
+let authentication_info_to_json (a : Authentication_info.t) : json =
+  `Assoc ([ ("scheme", `String a.scheme) ] @ str "credentials" a.credentials)
+
+let authentication_info : Authentication_info.t decoder =
+  D.obj @@ fun kvs ->
+  let* scheme = D.string_field_default "scheme" kvs in
+  let* credentials = D.string_opt_field "credentials" kvs in
+  Ok { Authentication_info.scheme; credentials }
+
+let task_push_notification_config_to_json (c : Task_push_notification_config.t) : json =
+  `Assoc
+    (str "tenant" c.tenant @ str "id" c.id
+    @ (if c.task_id = "" then [] else [ ("taskId", `String c.task_id) ])
+    @ [ ("url", `String c.url) ]
+    @ str "token" c.token
+    @ opt "authentication" authentication_info_to_json c.authentication)
+
+let task_push_notification_config : Task_push_notification_config.t decoder =
+  D.obj @@ fun kvs ->
+  let* tenant = D.string_opt_field "tenant" kvs in
+  let* id = D.string_opt_field "id" kvs in
+  let* task_id = D.string_field_default "taskId" kvs in
+  let* url = D.field "url" D.string kvs in
+  let* token = D.string_opt_field "token" kvs in
+  let* authentication = D.field_opt "authentication" authentication_info kvs in
+  Ok { Task_push_notification_config.tenant; id; task_id; url; token; authentication }
+
+let list_task_push_notification_configs_response :
+    List_task_push_notification_configs_response.t decoder =
+  D.obj @@ fun kvs ->
+  let* configs = D.list_field "configs" task_push_notification_config kvs in
+  let* next_page_token = D.string_field_default "nextPageToken" kvs in
+  Ok { List_task_push_notification_configs_response.configs; next_page_token }
+
+let list_tasks_response : List_tasks_response.t decoder =
+  D.obj @@ fun kvs ->
+  let* tasks = D.list_field "tasks" task kvs in
+  let* next_page_token = D.string_field_default "nextPageToken" kvs in
+  let* page_size = D.field_default "pageSize" D.int ~default:0 kvs in
+  let* total_size = D.field_default "totalSize" D.int ~default:0 kvs in
+  Ok { List_tasks_response.tasks; next_page_token; page_size; total_size }
+
 let send_message_configuration_to_json (c : Send_message_configuration.t) : json =
   `Assoc
     (str_list "acceptedOutputModes" c.accepted_output_modes
-    @ opt "historyLength" (fun n -> `Int n) c.history_length
+    @ opt "taskPushNotificationConfig" task_push_notification_config_to_json
+        c.push_notification_config
+    @ int "historyLength" c.history_length
     @ flag "returnImmediately" c.return_immediately)
 
 let send_message_request_to_json (r : Send_message_request.t) : json =
@@ -98,13 +142,36 @@ let send_message_request_to_json (r : Send_message_request.t) : json =
 let get_task_request_to_json (r : Get_task_request.t) : json =
   `Assoc
     (str "tenant" r.tenant @ [ ("id", `String r.id) ]
-    @ opt "historyLength" (fun n -> `Int n) r.history_length)
+    @ int "historyLength" r.history_length)
 
 let cancel_task_request_to_json (r : Cancel_task_request.t) : json =
   `Assoc (str "tenant" r.tenant @ [ ("id", `String r.id) ] @ meta "metadata" r.metadata)
 
 let subscribe_to_task_request_to_json (r : Subscribe_to_task_request.t) : json =
   `Assoc (str "tenant" r.tenant @ [ ("id", `String r.id) ])
+
+
+let list_tasks_request_to_json (r : List_tasks_request.t) : json =
+  `Assoc
+    (str "tenant" r.tenant @ str "contextId" r.context_id
+    @ opt "status" task_state_to_json r.status
+    @ int "pageSize" r.page_size @ str "pageToken" r.page_token
+    @ int "historyLength" r.history_length
+    @ opt "statusTimestampAfter" timestamp_to_json r.status_timestamp_after
+    @ opt "includeArtifacts" (fun b -> `Bool b) r.include_artifacts)
+
+let task_push_notification_config_request_to_json
+    (r : Task_push_notification_config_request.t) : json =
+  `Assoc (str "tenant" r.tenant @ [ ("taskId", `String r.task_id); ("id", `String r.id) ])
+
+let list_task_push_notification_configs_request_to_json
+    (r : List_task_push_notification_configs_request.t) : json =
+  `Assoc
+    (str "tenant" r.tenant @ [ ("taskId", `String r.task_id) ]
+    @ int "pageSize" r.page_size @ str "pageToken" r.page_token)
+
+let get_extended_agent_card_request_to_json (r : Get_extended_agent_card_request.t) : json =
+  `Assoc (str "tenant" r.tenant)
 
 let agent_interface : Agent_interface.t decoder =
   D.obj @@ fun kvs ->

@@ -213,16 +213,38 @@ module Task_artifact_update_event = struct
   }
 end
 
+module Authentication_info = struct
+  type t = { scheme : string; credentials : string option }
+
+  let make ?credentials scheme = { scheme; credentials }
+end
+
+module Task_push_notification_config = struct
+  type t = {
+    tenant : string option;
+    id : string option;
+    task_id : string;
+    url : string;
+    token : string option;
+    authentication : Authentication_info.t option;
+  }
+
+  let make ?tenant ?id ?(task_id = "") ?token ?authentication url =
+    { tenant; id; task_id; url; token; authentication }
+end
+
 module Send_message_configuration = struct
   type t = {
     accepted_output_modes : string list;
+    push_notification_config : Task_push_notification_config.t option;
     history_length : int option;
     return_immediately : bool;
   }
 
-  let make ?(accepted_output_modes = []) ?history_length
-      ?(return_immediately = false) () =
-    { accepted_output_modes; history_length; return_immediately }
+  let make ?(accepted_output_modes = []) ?push_notification_config
+      ?history_length ?(return_immediately = false) () =
+    { accepted_output_modes; push_notification_config; history_length;
+      return_immediately }
 end
 
 module Send_message_request = struct
@@ -256,6 +278,57 @@ end
 
 module Subscribe_to_task_request = struct
   type t = { tenant : string option; id : string }
+end
+
+module List_tasks_request = struct
+  type t = {
+    tenant : string option;
+    context_id : string option;
+    status : Task_state.t option;
+    page_size : int option;
+    page_token : string option;
+    history_length : int option;
+    status_timestamp_after : Ptime.t option;
+    include_artifacts : bool option;
+  }
+
+  let make ?tenant ?context_id ?status ?page_size ?page_token ?history_length
+      ?status_timestamp_after ?include_artifacts () =
+    { tenant; context_id; status; page_size; page_token; history_length;
+      status_timestamp_after; include_artifacts }
+end
+
+module List_tasks_response = struct
+  type t = {
+    tasks : Task.t list;
+    next_page_token : string;
+    page_size : int;
+    total_size : int;
+  }
+end
+
+module Task_push_notification_config_request = struct
+  type t = { tenant : string option; task_id : string; id : string }
+end
+
+module List_task_push_notification_configs_request = struct
+  type t = {
+    tenant : string option;
+    task_id : string;
+    page_size : int option;
+    page_token : string option;
+  }
+end
+
+module List_task_push_notification_configs_response = struct
+  type t = {
+    configs : Task_push_notification_config.t list;
+    next_page_token : string;
+  }
+end
+
+module Get_extended_agent_card_request = struct
+  type t = { tenant : string option }
 end
 
 module Agent_interface = struct

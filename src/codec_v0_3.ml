@@ -161,10 +161,48 @@ let send_message_response_to_json : Send_message_response.t -> json = function
   | Task t -> task_to_json t
   | Message m -> message_to_json m
 
+let push_notification_config_to_json (c : Task_push_notification_config.t) : json =
+  let auth (a : Authentication_info.t) =
+    `Assoc ([ ("schemes", `List [ `String a.scheme ]) ] @ str "credentials" a.credentials)
+  in
+  `Assoc
+    (str "id" c.id @ [ ("url", `String c.url) ] @ str "token" c.token
+    @ opt "authentication" auth c.authentication)
+
+let task_push_notification_config_to_json (c : Task_push_notification_config.t) : json =
+  `Assoc
+    [ ("taskId", `String c.task_id);
+      ("pushNotificationConfig", push_notification_config_to_json c) ]
+
+let task_push_notification_config : Task_push_notification_config.t decoder =
+  let auth =
+    D.obj @@ fun kvs ->
+    let* schemes = D.list_field "schemes" D.string kvs in
+    let* credentials = D.string_opt_field "credentials" kvs in
+    Ok { Authentication_info.scheme = String.concat "," schemes; credentials }
+  in
+  D.obj @@ fun kvs ->
+  let* task_id = D.string_field_default "taskId" kvs in
+  D.field "pushNotificationConfig"
+    (D.obj @@ fun kvs ->
+     let* id = D.string_opt_field "id" kvs in
+     let* url = D.field "url" D.string kvs in
+     let* token = D.string_opt_field "token" kvs in
+     let* authentication = D.field_opt "authentication" auth kvs in
+     Ok { Task_push_notification_config.tenant = None; id; task_id; url; token; authentication })
+    kvs
+
+let list_task_push_notification_configs_response :
+    List_task_push_notification_configs_response.t decoder =
+ fun j ->
+  let* configs = D.list task_push_notification_config j in
+  Ok { List_task_push_notification_configs_response.configs; next_page_token = "" }
+
 let send_message_configuration_to_json (c : Send_message_configuration.t) : json =
   `Assoc
     (str_list "acceptedOutputModes" c.accepted_output_modes
-    @ opt "historyLength" (fun n -> `Int n) c.history_length
+    @ opt "pushNotificationConfig" push_notification_config_to_json c.push_notification_config
+    @ int "historyLength" c.history_length
     @ [ ("blocking", `Bool (not c.return_immediately)) ])
 
 let send_message_request_to_json (r : Send_message_request.t) : json =
@@ -174,10 +212,18 @@ let send_message_request_to_json (r : Send_message_request.t) : json =
     @ meta "metadata" r.metadata)
 
 let get_task_request_to_json (r : Get_task_request.t) : json =
-  `Assoc ([ ("id", `String r.id) ] @ opt "historyLength" (fun n -> `Int n) r.history_length)
+  `Assoc ([ ("id", `String r.id) ] @ int "historyLength" r.history_length)
 
 let cancel_task_request_to_json (r : Cancel_task_request.t) : json =
   `Assoc ([ ("id", `String r.id) ] @ meta "metadata" r.metadata)
 
 let subscribe_to_task_request_to_json (r : Subscribe_to_task_request.t) : json =
   `Assoc [ ("id", `String r.id) ]
+
+let task_push_notification_config_request_to_json
+    (r : Task_push_notification_config_request.t) : json =
+  `Assoc [ ("id", `String r.task_id); ("pushNotificationConfigId", `String r.id) ]
+
+let list_task_push_notification_configs_request_to_json
+    (r : List_task_push_notification_configs_request.t) : json =
+  `Assoc [ ("id", `String r.task_id) ]
