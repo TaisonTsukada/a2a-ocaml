@@ -6,8 +6,6 @@
 
 A type-safe [A2A (Agent2Agent) Protocol](https://github.com/a2aproject/A2A) **v1.0** client for OCaml 5, built on [Eio](https://github.com/ocaml-multicore/eio) and [cohttp-eio](https://github.com/mirage/ocaml-cohttp). It is backward compatible with **v0.3** agents: the version is negotiated from the Agent Card, and your code stays the same.
 
-[日本語版 README](README.ja.md)
-
 ```ocaml
 match A2a_client.send_text client "Summarize this company's latest filings" with
 | Ok (Message m) -> print_endline (A2a_client.Message.text m)
