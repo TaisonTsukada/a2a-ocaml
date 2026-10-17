@@ -1,4 +1,9 @@
-## 0.2.0 (unreleased)
+## 0.2.1
+
+- Require cohttp-eio, cohttp and http >= 6.2.1. Earlier versions have a
+  different `Cohttp_eio.Client.make ~https` type and do not compile.
+
+## 0.2.0
 
 - HTTP+JSON (REST) binding for protocol 1.0, selected from the Agent Card
   (`~bindings`) or with `create ~binding:Http_json`. REST errors
