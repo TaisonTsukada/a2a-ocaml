@@ -47,7 +47,7 @@ Then add the library to your `dune` file:
  (libraries a2a-client eio_main))
 ```
 
-**Requirements:** OCaml ≥ 5.1, eio ≥ 1.0, cohttp-eio ≥ 6.0, yojson ≥ 3.0.
+**Requirements:** OCaml ≥ 5.1, eio ≥ 1.0, cohttp-eio ≥ 6.2.1, yojson ≥ 3.0.
 
 ## Quick start
 
