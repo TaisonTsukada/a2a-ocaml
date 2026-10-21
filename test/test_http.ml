@@ -80,7 +80,7 @@ let serve ~sw net callback =
 
 let with_server f =
   Eio_main.run @@ fun env ->
-  let clock = Eio.Stdenv.mono_clock env and net = Eio.Stdenv.net env in
+  let clock = Eio.Stdenv.mono_clock env and net = Memory_net.create () in
   Eio.Switch.run @@ fun sw ->
   let port = serve ~sw net (handler ~clock) in
   let transport = Transport.cohttp net in
@@ -122,7 +122,7 @@ let test_timeout_and_cancel () =
 let test_https_without_tls () =
   Eio_main.run @@ fun env ->
   let client =
-    create ~clock:(Eio.Stdenv.mono_clock env) ~transport:(Transport.cohttp (Eio.Stdenv.net env))
+    create ~clock:(Eio.Stdenv.mono_clock env) ~transport:(Transport.cohttp (Memory_net.create ()))
       (Uri.of_string "https://user:SECRET@agent.invalid/rpc?token=SECRET")
   in
   match send_text client "x" with
@@ -133,6 +133,6 @@ let test_https_without_tls () =
   | _ -> Alcotest.fail "expected Transport_error"
 
 let tests =
-  [ ("end to end over sockets", `Quick, test_end_to_end);
-    ("timeout and cancellation over sockets", `Quick, test_timeout_and_cancel);
+  [ ("end to end over HTTP", `Quick, test_end_to_end);
+    ("timeout and cancellation over HTTP", `Quick, test_timeout_and_cancel);
     ("https without TLS wrapper", `Quick, test_https_without_tls) ]

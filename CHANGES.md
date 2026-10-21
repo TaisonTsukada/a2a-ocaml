@@ -1,3 +1,9 @@
+## 0.2.2
+
+- The HTTP and connection pool tests run over an in-memory Eio network
+  instead of loopback TCP sockets, so they pass where binding a socket is
+  not permitted (e.g. in the opam sandbox on macOS).
+
 ## 0.2.1
 
 - Require cohttp-eio, cohttp and http >= 6.2.1. Earlier versions have a

@@ -19,7 +19,7 @@ let handler ~clock ~peers ~port (((_, peer), req, body) as conn) =
 
 let with_pool f =
   Eio_main.run @@ fun env ->
-  let clock = Eio.Stdenv.mono_clock env and net = Eio.Stdenv.net env in
+  let clock = Eio.Stdenv.mono_clock env and net = Memory_net.create () in
   Eio.Switch.run @@ fun sw ->
   let peers = ref [] in
   let port = Test_http.serve ~sw net (handler ~clock ~peers) in
@@ -81,7 +81,7 @@ let read_request flow =
 
 let test_stale_connection () =
   Eio_main.run @@ fun env ->
-  let clock = Eio.Stdenv.mono_clock env and net = Eio.Stdenv.net env in
+  let clock = Eio.Stdenv.mono_clock env and net = Memory_net.create () in
   Eio.Switch.run @@ fun sw ->
   let socket, port = Test_http.listen ~sw net in
   let accepted = ref 0 in
