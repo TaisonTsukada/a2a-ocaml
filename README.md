@@ -31,13 +31,14 @@ match A2a_client.send_text client "Summarize this company's latest filings" with
 
 ## Installation
 
-The package is not on the public opam repository yet. Install it straight from GitHub; opam resolves the dependencies:
+Install from the opam repository:
 
 ```sh
-opam pin add a2a-client https://github.com/TaisonTsukada/a2a-ocaml.git
+opam update
+opam install a2a-client
 ```
 
-To install a specific release, append its tag, for example `…/a2a-ocaml.git#v0.1.0`. To install from a local checkout, run `opam install .` in the repository root.
+To try the development version, pin it from GitHub: `opam pin add a2a-client https://github.com/TaisonTsukada/a2a-ocaml.git`. To install from a local checkout, run `opam install .` in the repository root.
 
 Then add the library to your `dune` file:
 
