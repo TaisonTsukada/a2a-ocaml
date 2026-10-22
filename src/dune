@@ -1,3 +1,9 @@
+; Modules are grouped by layer, each depending only on the ones above it:
+; model (data types), codec (JSON), transport (HTTP), wire (A2A over HTTP),
+; client (operations). Module names stay flat.
+
+(include_subdirs unqualified)
+
 (library
  (name a2a_client)
  (public_name a2a-client)
