@@ -28,8 +28,11 @@ let run ?protocol_version ?bindings ~clock ~transport base =
   in
   let client =
     match protocol_version with
-    | Some v when v <> version client ->
-        create ~clock ~transport ~protocol_version:v ?card:(agent_card client) (A2a_client.endpoint client)
+    | Some v when v <> version client -> (
+        match Protocol.make v (binding client) with
+        | Some protocol ->
+            create ~clock ~transport ~protocol ?card:(agent_card client) (A2a_client.endpoint client)
+        | None -> failwith "no such protocol")
     | _ -> client
   in
   Printf.printf "protocol %s\n%!" (Protocol_version.to_string (version client));
@@ -60,7 +63,8 @@ let run ?protocol_version ?bindings ~clock ~transport base =
        check "raw (base64) artifact" true ""
    | _ -> check "raw (base64) artifact" false "unexpected");
   (match artifact_part "tck-artifact-file-url" with
-   | Some { content = Url "https://example.com/output.txt"; _ } -> check "url artifact" true ""
+   | Some { content = Url u; _ } when Uri.to_string u = "https://example.com/output.txt" ->
+       check "url artifact" true ""
    | _ -> check "url artifact" false "unexpected");
   (match artifact_part "tck-artifact-data" with
    | Some { content = Data (`Assoc kvs); _ } ->
@@ -71,7 +75,7 @@ let run ?protocol_version ?bindings ~clock ~transport base =
    | Ok (Send_message_response.Task t) when Task.state t = Input_required ->
        check "input-required state" true "";
        let follow = Task.follow_up t [ Part.text "from SFO" ] in
-       let follow = { follow with message_id = "tck-complete-task-" ^ Id_gen.next () } in
+       let follow = { follow with message_id = Some ("tck-complete-task-" ^ Id_gen.next ()) } in
        expect_task "follow-up keeps taskId/contextId" (send_message client follow) (fun t' ->
            t'.id = t.id && t'.context_id = t.context_id)
    | Ok _ -> check "input-required state" false "unexpected response"
@@ -117,7 +121,7 @@ let run ?protocol_version ?bindings ~clock ~transport base =
   (match send_message client ~configuration:config (msg "test-resubscribe-message-id" "slow") with
    | Ok (Send_message_response.Task t) -> (
        check "returnImmediately -> active task" (Task_state.is_active (Task.state t)) (Task_state.to_string t.status.state);
-       match wait_for_task client ~interval:0.5 ~timeout:20. t.id with
+       match wait_for_task client ~poll:(Poll.make ~interval:0.5 ()) ~timeout:20. t.id with
        | Ok t' -> check "wait_for_task polls to completion" (Task.state t' = Completed) (Task_state.to_string t'.status.state)
        | Error e -> check "wait_for_task" false (Error.to_string e))
    | _ -> check "returnImmediately" false "no task");

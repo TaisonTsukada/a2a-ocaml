@@ -237,7 +237,7 @@ let test_wait_for_task () =
   in
   let client = create ~clock ~transport endpoint in
   let t0 = Eio.Time.Mono.now clock in
-  let t = ok "wait" (wait_for_task client ~interval:1. ~backoff:2. ~max_interval:3. ~timeout:60. "t-1") in
+  let t = ok "wait" (wait_for_task client ~poll:(Poll.make ~interval:1. ~backoff:2. ~max_interval:3. ()) ~timeout:60. "t-1") in
   Alcotest.(check bool) "completed" true (Task.state t = Task_state.Completed);
   Alcotest.(check int) "4 polls" 4 (List.length rec_.requests);
   let elapsed = Mtime.span t0 (Eio.Time.Mono.now clock) |> Mtime.Span.to_float_ns in
@@ -259,7 +259,7 @@ let test_wait_for_task_timeout () =
   run @@ fun clock ->
   let transport, rec_ = Mock.transport ~clock (scripted_tasks [ "WORKING" ]) in
   let client = create ~clock ~transport endpoint in
-  (match wait_for_task client ~interval:1. ~backoff:1. ~timeout:10.5 "t-1" with
+  (match wait_for_task client ~poll:(Poll.make ~interval:1. ~backoff:1. ()) ~timeout:10.5 "t-1" with
    | Error (Error.Poll_timeout { last_task = Some t }) ->
        Alcotest.(check bool) "last state" true (Task.state t = Task_state.Working)
    | _ -> Alcotest.fail "expected Poll_timeout");

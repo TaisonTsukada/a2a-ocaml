@@ -46,14 +46,14 @@ let run ~clock ~transport ~hook ~hook_url base binding =
          (Printf.sprintf "%d tasks" (List.length r.tasks))
    | Error e -> check "ListTasks" false (err e));
   (match list_tasks client ~page_size:1 () with
-   | Ok ({ tasks = [ _ ]; next_page_token; _ } as r) when next_page_token <> "" -> (
+   | Ok ({ tasks = [ _ ]; next_page_token = Some next_page_token; _ } as r) -> (
        match list_tasks client ~page_size:1 ~page_token:next_page_token () with
        | Ok r2 ->
            check "ListTasks pagination"
              (match (r.tasks, r2.tasks) with [ a ], [ b ] -> a.id <> b.id | _ -> false)
              (Printf.sprintf "%d tasks on page 2" (List.length r2.tasks))
        | Error e -> check "ListTasks page 2" false (err e))
-   | Ok r -> check "ListTasks pagination" false (Printf.sprintf "%d tasks, token %S" (List.length r.tasks) r.next_page_token)
+   | Ok r -> check "ListTasks pagination" false (Printf.sprintf "%d tasks, token %s" (List.length r.tasks) (Option.value r.next_page_token ~default:"none"))
    | Error e -> check "ListTasks pagination" false (err e));
   (match list_tasks client ~status:Completed ~history_length:0 () with
    | Ok r ->
@@ -86,23 +86,27 @@ let run ~clock ~transport ~hook ~hook_url base binding =
        check "with_agent_card" ((Option.get (agent_card client)).name = card.name) ""
    | Error e -> check "GetExtendedAgentCard" false (err e));
 
+  let poll = Poll.make ~interval:0.3 () in
   let immediately = Send_message_configuration.make ~return_immediately:true () in
   (match send ~configuration:immediately "slow push" with
    | Ok (Task t) -> (
        let token = "tok-" ^ Protocol_binding.to_string binding in
-       let config = Task_push_notification_config.make ~task_id:t.id ~token hook_url in
+       let config =
+         Task_push_notification_config.make ~task_id:t.id
+           (Push_notification_config.make ~token (Uri.of_string hook_url))
+       in
        match create_task_push_notification_config client config with
        | Error e -> check "CreateTaskPushNotificationConfig" false (err e)
        | Ok created -> (
-           check "CreateTaskPushNotificationConfig" (created.url = hook_url && created.id <> None) "";
-           let id = Option.value created.id ~default:"" in
+           check "CreateTaskPushNotificationConfig" (Uri.to_string created.config.url = hook_url && created.config.id <> None) "";
+           let id = Option.value created.config.id ~default:"" in
            (match get_task_push_notification_config client ~task_id:t.id id with
-            | Ok c -> check "GetTaskPushNotificationConfig" (c.url = hook_url && c.token = Some token) ""
+            | Ok c -> check "GetTaskPushNotificationConfig" (Uri.to_string c.config.url = hook_url && c.config.token = Some token) ""
             | Error e -> check "GetTaskPushNotificationConfig" false (err e));
            (match list_task_push_notification_configs client t.id with
             | Ok r -> check "ListTaskPushNotificationConfigs" (List.length r.configs = 1) ""
             | Error e -> check "ListTaskPushNotificationConfigs" false (err e));
-           (match wait_for_task client ~interval:0.3 ~timeout:20. t.id with
+           (match wait_for_task client ~poll ~timeout:20. t.id with
             | Ok t' -> check "task completed" (Task.state t' = Completed) (state t')
             | Error e -> check "task completed" false (err e));
            Eio.Time.Mono.sleep clock 0.5;
@@ -121,11 +125,13 @@ let run ~clock ~transport ~hook ~hook_url base binding =
   let inline_token = "inline-" ^ Protocol_binding.to_string binding in
   let configuration =
     Send_message_configuration.make ~return_immediately:true
-      ~push_notification_config:(Task_push_notification_config.make ~token:inline_token hook_url) ()
+      ~push_notification_config:
+        (Push_notification_config.make ~token:inline_token (Uri.of_string hook_url))
+      ()
   in
   (match send ~configuration "slow inline" with
    | Ok (Task t) ->
-       ignore (wait_for_task client ~interval:0.3 ~timeout:20. t.id);
+       ignore (wait_for_task client ~poll ~timeout:20. t.id);
        Eio.Time.Mono.sleep clock 0.5;
        check "push config sent with the message"
          (List.exists (fun (tok, _) -> tok = Some inline_token) !hook)

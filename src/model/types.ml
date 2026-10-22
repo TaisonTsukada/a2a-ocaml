@@ -2,6 +2,9 @@ type json = Yojson.Safe.t
 
 type metadata = (string * json) list
 
+(* A value the client recognizes, or the text it was given. *)
+type 'a known = Known of 'a | Unknown of string
+
 module Role = struct
   type t = Unspecified | User | Agent
 
@@ -82,7 +85,7 @@ module Part = struct
   type content =
     | Text of string
     | Raw of string
-    | Url of string
+    | Url of Uri.t
     | Data of json
 
   type t = {
@@ -111,7 +114,7 @@ end
 
 module Message = struct
   type t = {
-    message_id : string;
+    message_id : string option;
     context_id : string option;
     task_id : string option;
     role : Role.t;
@@ -124,7 +127,7 @@ module Message = struct
   let make ?message_id ?context_id ?task_id ?metadata ?(extensions = [])
       ?(reference_task_ids = []) ~role parts =
     let message_id =
-      match message_id with Some id -> id | None -> Id.uuid_v4 ()
+      Some (match message_id with Some id -> id | None -> Id.uuid_v4 ())
     in
     { message_id; context_id; task_id; role; parts; metadata; extensions;
       reference_task_ids }
@@ -196,7 +199,7 @@ end
 module Task_status_update_event = struct
   type t = {
     task_id : string;
-    context_id : string;
+    context_id : string option;
     status : Task_status.t;
     metadata : metadata option;
   }
@@ -205,7 +208,7 @@ end
 module Task_artifact_update_event = struct
   type t = {
     task_id : string;
-    context_id : string;
+    context_id : string option;
     artifact : Artifact.t;
     append : bool;
     last_chunk : bool;
@@ -219,24 +222,31 @@ module Authentication_info = struct
   let make ?credentials scheme = { scheme; credentials }
 end
 
-module Task_push_notification_config = struct
+module Push_notification_config = struct
   type t = {
-    tenant : string option;
     id : string option;
-    task_id : string;
-    url : string;
+    url : Uri.t;
     token : string option;
     authentication : Authentication_info.t option;
   }
 
-  let make ?tenant ?id ?(task_id = "") ?token ?authentication url =
-    { tenant; id; task_id; url; token; authentication }
+  let make ?id ?token ?authentication url = { id; url; token; authentication }
+end
+
+module Task_push_notification_config = struct
+  type t = {
+    tenant : string option;
+    task_id : string;
+    config : Push_notification_config.t;
+  }
+
+  let make ?tenant ~task_id config = { tenant; task_id; config }
 end
 
 module Send_message_configuration = struct
   type t = {
     accepted_output_modes : string list;
-    push_notification_config : Task_push_notification_config.t option;
+    push_notification_config : Push_notification_config.t option;
     history_length : int option;
     return_immediately : bool;
   }
@@ -301,7 +311,7 @@ end
 module List_tasks_response = struct
   type t = {
     tasks : Task.t list;
-    next_page_token : string;
+    next_page_token : string option;
     page_size : int;
     total_size : int;
   }
@@ -323,7 +333,7 @@ end
 module List_task_push_notification_configs_response = struct
   type t = {
     configs : Task_push_notification_config.t list;
-    next_page_token : string;
+    next_page_token : string option;
   }
 end
 
@@ -333,15 +343,15 @@ end
 
 module Agent_interface = struct
   type t = {
-    url : string;
-    protocol_binding : string;
+    url : Uri.t;
+    protocol_binding : Protocol_binding.t known;
     tenant : string option;
-    protocol_version : string;
+    protocol_version : Protocol_version.t known;
   }
 end
 
 module Agent_provider = struct
-  type t = { url : string; organization : string }
+  type t = { url : Uri.t; organization : string }
 end
 
 module Agent_extension = struct
@@ -355,15 +365,15 @@ end
 
 module Agent_capabilities = struct
   type t = {
-    streaming : bool option;
-    push_notifications : bool option;
+    streaming : bool;
+    push_notifications : bool;
     extensions : Agent_extension.t list;
-    extended_agent_card : bool option;
+    extended_agent_card : bool;
   }
 
   let empty =
-    { streaming = None; push_notifications = None; extensions = [];
-      extended_agent_card = None }
+    { streaming = false; push_notifications = false; extensions = [];
+      extended_agent_card = false }
 end
 
 module Security_requirement = struct
@@ -392,31 +402,31 @@ module Oauth_flow = struct
 
   type t =
     | Authorization_code of {
-        authorization_url : string;
-        token_url : string;
-        refresh_url : string option;
+        authorization_url : Uri.t;
+        token_url : Uri.t;
+        refresh_url : Uri.t option;
         scopes : scopes;
         pkce_required : bool;
       }
     | Client_credentials of {
-        token_url : string;
-        refresh_url : string option;
+        token_url : Uri.t;
+        refresh_url : Uri.t option;
         scopes : scopes;
       }
     | Implicit of {
-        authorization_url : string option;
-        refresh_url : string option;
+        authorization_url : Uri.t option;
+        refresh_url : Uri.t option;
         scopes : scopes;
       }
     | Password of {
-        token_url : string option;
-        refresh_url : string option;
+        token_url : Uri.t option;
+        refresh_url : Uri.t option;
         scopes : scopes;
       }
     | Device_code of {
-        device_authorization_url : string;
-        token_url : string;
-        refresh_url : string option;
+        device_authorization_url : Uri.t;
+        token_url : Uri.t;
+        refresh_url : Uri.t option;
         scopes : scopes;
       }
 end
@@ -432,11 +442,11 @@ module Security_scheme = struct
     | Oauth2 of {
         description : string option;
         flows : Oauth_flow.t option;
-        oauth2_metadata_url : string option;
+        oauth2_metadata_url : Uri.t option;
       }
     | Open_id_connect of {
         description : string option;
-        open_id_connect_url : string;
+        open_id_connect_url : Uri.t;
       }
     | Mutual_tls of { description : string option }
 end
@@ -448,7 +458,7 @@ module Agent_card = struct
     supported_interfaces : Agent_interface.t list;
     provider : Agent_provider.t option;
     version : string;
-    documentation_url : string option;
+    documentation_url : Uri.t option;
     capabilities : Agent_capabilities.t;
     security_schemes : (string * Security_scheme.t) list;
     security_requirements : Security_requirement.t list;
@@ -456,8 +466,8 @@ module Agent_card = struct
     default_output_modes : string list;
     skills : Agent_skill.t list;
     signatures : Agent_card_signature.t list;
-    icon_url : string option;
+    icon_url : Uri.t option;
   }
 
-  let supports_streaming t = t.capabilities.streaming = Some true
+  let supports_streaming t = t.capabilities.streaming
 end

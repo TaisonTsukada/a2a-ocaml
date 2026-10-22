@@ -2,6 +2,8 @@
 
 (name a2a-client)
 
+(version 0.3.0)
+
 (generate_opam_files true)
 
 (source

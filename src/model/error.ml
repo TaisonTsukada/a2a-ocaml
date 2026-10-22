@@ -81,6 +81,7 @@ module Code = struct
       (Version_not_supported, "VERSION_NOT_SUPPORTED") ]
 
   let of_reason r = List.find_map (fun (c, s) -> if s = r then Some c else None) reasons
+  let to_reason c = List.assoc_opt c reasons
 end
 
 type error_info = {

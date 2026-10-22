@@ -1,0 +1,4 @@
+(library
+ (name a2a_client_testing)
+ (public_name a2a-client.testing)
+ (libraries a2a-client eio cstruct uri yojson))

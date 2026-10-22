@@ -4,6 +4,7 @@ module Codec = Codec
 module Codec_v0_3 = Codec_v0_3
 module Protocol_version = Protocol_version
 module Protocol_binding = Protocol_binding
+module Protocol = Protocol
 module Error = Error
 module Transport = Transport
 module Lifecycle = Lifecycle

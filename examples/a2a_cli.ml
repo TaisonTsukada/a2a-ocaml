@@ -54,7 +54,7 @@ let () =
             let rec page token =
               let* r = list_tasks client ?context_id ?page_token:token () in
               List.iter print_task r.tasks;
-              if r.next_page_token = "" then Ok () else page (Some r.next_page_token)
+              match r.next_page_token with None -> Ok () | Some _ as next -> page next
             in
             page None
         | _ -> Ok (prerr_endline ("unknown command " ^ cmd))

@@ -71,6 +71,19 @@ module Reconnect : sig
       [backoff < 1]. *)
 end
 
+(** How {!wait_for_task} and {!send_message_and_wait} poll. *)
+module Poll : sig
+  type t
+
+  val default : t
+  (** [make ()]. *)
+
+  val make : ?interval:float -> ?max_interval:float -> ?backoff:float -> unit -> t
+  (** Sleep [interval] seconds (default 1) between polls, multiplied by
+      [backoff] (default 1.5) each time, up to [max_interval] (default 10).
+      Raises [Invalid_argument] if [interval <= 0] or [backoff < 1]. *)
+end
+
 type t
 
 val create :
@@ -83,8 +96,7 @@ val create :
   ?max_response_size:int ->
   ?reconnect:Reconnect.t ->
   ?card:Agent_card.t ->
-  ?protocol_version:Protocol_version.t ->
-  ?binding:Protocol_binding.t ->
+  ?protocol:Protocol.t ->
   clock:_ Eio.Time.Mono.t ->
   transport:Transport.t ->
   Uri.t ->
@@ -92,10 +104,10 @@ val create :
 (** [create ~clock ~transport endpoint] talks to [endpoint], the URL of a
     [supportedInterfaces] entry.
 
-    @param protocol_version wire format to use. Default [V1_0]; pass [V0_3]
-      for an agent that implements A2A 0.3.x.
-    @param binding default [Jsonrpc]. With [Http_json], operation paths
-      such as [/message:send] are appended to [endpoint].
+    @param protocol version and binding. Default [V1_0 Jsonrpc]; pass
+      [V0_3] for an agent that implements A2A 0.3.x. With
+      [V1_0 Http_json], operation paths such as [/message:send] are
+      appended to [endpoint].
 
     @param headers extra HTTP headers on every request.
     @param tenant sent as [tenant] in every request (spec §8.3.2). Not
@@ -111,9 +123,7 @@ val create :
     @param reconnect for streaming calls. Default {!Reconnect.none}.
     @param card if given, operations that need a capability the card does
       not declare (streaming, push notifications, extended Agent Card) are
-      refused locally with [Unsupported_capability].
-
-    Raises [Invalid_argument] for [V0_3] with [Http_json]. *)
+      refused locally with [Unsupported_capability]. *)
 
 val connect :
   ?auth:Auth.t ->
@@ -125,6 +135,7 @@ val connect :
   ?reconnect:Reconnect.t ->
   ?protocol_version:Protocol_version.t ->
   ?bindings:Protocol_binding.t list ->
+  ?rewrite_endpoint:(Uri.t -> Uri.t) ->
   clock:_ Eio.Time.Mono.t ->
   transport:Transport.t ->
   Uri.t ->
@@ -138,9 +149,10 @@ val with_agent_card : t -> Agent_card.t -> t
 (** The same client, checking capabilities against another card, e.g. the
     one from {!get_extended_agent_card}. *)
 
-val version : t -> Protocol_version.t
-(** The protocol version this client speaks. *)
+val protocol : t -> Protocol.t
+(** The protocol version and binding this client speaks. *)
 
+val version : t -> Protocol_version.t
 val binding : t -> Protocol_binding.t
 
 (** {1 Discovery} *)
@@ -183,12 +195,24 @@ val of_agent_card :
   ?reconnect:Reconnect.t ->
   ?protocol_version:Protocol_version.t ->
   ?bindings:Protocol_binding.t list ->
+  ?rewrite_endpoint:(Uri.t -> Uri.t) ->
   clock:_ Eio.Time.Mono.t ->
   transport:Transport.t ->
   Agent_card.t ->
   (t, Error.t) result
 (** Client for the interface chosen by {!select_interface}, with its
-    [tenant], protocol version and binding. *)
+    [tenant], protocol version and binding.
+
+    @param rewrite_endpoint maps the chosen interface's URL to the one
+      actually used. Default: unchanged. The card only picks the
+      interface; use this when the URL it advertises is not reachable
+      from the client, e.g. an agent behind a Kubernetes Service that
+      builds its card from its own bind address:
+      [connect ~rewrite_endpoint:(rebase_endpoint ~onto:base) base]. *)
+
+val rebase_endpoint : onto:Uri.t -> Uri.t -> Uri.t
+(** [rebase_endpoint ~onto url] is [url] with the scheme, host and port of
+    [onto]; its path and query are kept. *)
 
 val get_extended_agent_card : t -> ?tenant:string -> unit -> (Agent_card.t, Error.t) result
 (** [GetExtendedAgentCard] ([agent/getAuthenticatedExtendedCard] in 0.3):
@@ -271,39 +295,101 @@ val delete_task_push_notification_config :
 
 (** {1 Streaming}
 
-    Events are decoded and handed to [on_event] one by one as SSE data
-    arrives; the response is never buffered as a whole. If [on_event]
-    raises, the exception propagates and the connection is closed. To stop
-    early from outside, cancel the calling fiber (e.g. [Eio.Fiber.first],
-    [Eio.Time.with_timeout]).
+    Each streaming operation comes in two forms that behave the same:
+    push ({!send_streaming_message}, {!subscribe_to_task}) hands events to
+    [on_event] and returns when the stream ends; pull
+    ({!open_streaming_message}, {!open_task_subscription}) returns an
+    {!Event_stream.t} to read with {!Event_stream.next}, e.g. to relay
+    events to an HTTP response of your own.
 
-    The result is the final state, with all status and artifact updates
-    folded into the task ({!Lifecycle.apply}). The stream ends normally
-    after a [Message], when the task reaches a terminal state, or when the
-    server closes it while the task is interrupted (input/auth required).
-    Any other close is [Error (Stream_ended _)] carrying the last known
-    task, so the caller can resume with {!subscribe_to_task} or
+    Events are decoded one by one as SSE data arrives; the response is
+    never buffered as a whole, and no event is read before the previous
+    one was handed over.
+
+    The final state is the task with all status and artifact updates
+    folded in ({!Lifecycle.apply}). The stream ends normally after a
+    [Message], when the task reaches a terminal state, or when the server
+    closes it while the task is interrupted (input/auth required). Any
+    other close is [Error (Stream_ended _)] carrying the last known task,
+    so the caller can resume with {!subscribe_to_task} or
     {!wait_for_task}, unless the client was created with a {!Reconnect}
-    policy, which does that itself. *)
+    policy, which does that itself.
+
+    [accumulate] (default [true]) folds history and artifacts into that
+    task. With [false], only its id, context, status and metadata are
+    tracked: the outcome's task has empty [history] and [artifacts], and
+    memory stays constant however long the stream. Use it when you
+    consume the events themselves. *)
 
 val send_streaming_message :
   t ->
   ?tenant:string ->
   ?configuration:Send_message_configuration.t ->
   ?metadata:metadata ->
+  ?accumulate:bool ->
   ?on_event:(Stream_response.t -> unit) ->
   Message.t ->
   (Lifecycle.Outcome.t, Error.t) result
-(** [SendStreamingMessage]. *)
+(** [SendStreamingMessage]. If [on_event] raises, the exception propagates
+    and the connection is closed. To stop early from outside, cancel the
+    calling fiber (e.g. [Eio.Fiber.first], [Eio.Time.with_timeout]). *)
 
 val subscribe_to_task :
   t ->
   ?tenant:string ->
+  ?accumulate:bool ->
   ?on_event:(Stream_response.t -> unit) ->
   string ->
   (Lifecycle.Outcome.t, Error.t) result
 (** [SubscribeToTask] ([tasks/resubscribe] in 0.3): re-attach to a
     non-terminal task's event stream. *)
+
+(** An open stream of events, read one at a time. *)
+module Event_stream : sig
+  type t
+
+  val next : t -> (Stream_response.t option, Error.t) result
+  (** Wait for the next event. [Ok None] once the stream has ended
+      normally or was {!close}d; [Error e] if it ended otherwise, with the
+      error {!send_streaming_message} would return. After the end, every
+      call returns the same. Call it from one fiber at a time. *)
+
+  val outcome : t -> (Lifecycle.Outcome.t, Error.t) result option
+  (** What {!send_streaming_message} would have returned, once {!next} has
+      returned every event; [None] before that and after {!close}. *)
+
+  val close : t -> unit
+  (** Stop reading and release the connection. Idempotent. A {!next}
+      waiting in another fiber returns [Ok None]. Releasing the switch the
+      stream was opened with also closes it. *)
+end
+
+val open_streaming_message :
+  t ->
+  sw:Eio.Switch.t ->
+  ?tenant:string ->
+  ?configuration:Send_message_configuration.t ->
+  ?metadata:metadata ->
+  ?accumulate:bool ->
+  Message.t ->
+  (Event_stream.t, Error.t) result
+(** [SendStreamingMessage], read with {!Event_stream.next}. Returns once
+    the agent has accepted the request and sent its first event (which
+    [next] returns first), so an [Error] here means nothing was streamed:
+    a refused connection, an HTTP error, or an agent error such as
+    [Invalid_params], whether as a response or as the first SSE event.
+    The stream is read by a fiber in [sw]; it ends with [sw] at the
+    latest. *)
+
+val open_task_subscription :
+  t ->
+  sw:Eio.Switch.t ->
+  ?tenant:string ->
+  ?accumulate:bool ->
+  string ->
+  (Event_stream.t, Error.t) result
+(** [SubscribeToTask], read with {!Event_stream.next}. As
+    {!open_streaming_message}. *)
 
 (** {1 Task lifecycle} *)
 
@@ -311,18 +397,13 @@ val wait_for_task :
   t ->
   ?tenant:string ->
   ?history_length:int ->
-  ?interval:float ->
-  ?max_interval:float ->
-  ?backoff:float ->
+  ?poll:Poll.t ->
   timeout:float ->
   string ->
   (Task.t, Error.t) result
-(** Poll [GetTask] until the task is terminal or interrupted. Sleeps
-    [interval] seconds (default 1) between polls, multiplied by [backoff]
-    (default 1.5) each time up to [max_interval] (default 10). Gives up
-    with [Poll_timeout] after [timeout] seconds; any failed [GetTask]
-    aborts with that error.
-    Raises [Invalid_argument] if [interval <= 0] or [backoff < 1]. *)
+(** Poll [GetTask] until the task is terminal or interrupted, as [poll]
+    says (default {!Poll.default}). Gives up with [Poll_timeout] after
+    [timeout] seconds; any failed [GetTask] aborts with that error. *)
 
 val send_message_and_wait :
   t ->
@@ -330,9 +411,7 @@ val send_message_and_wait :
   ?configuration:Send_message_configuration.t ->
   ?metadata:metadata ->
   ?history_length:int ->
-  ?interval:float ->
-  ?max_interval:float ->
-  ?backoff:float ->
+  ?poll:Poll.t ->
   timeout:float ->
   Message.t ->
   (Lifecycle.Outcome.t, Error.t) result
