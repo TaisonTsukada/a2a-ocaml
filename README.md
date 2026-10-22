@@ -182,6 +182,29 @@ send_streaming_message client (Message.user_text "Write a report")
 - **Early close:** if the stream closes at any other point, you get `Error (Stream_ended { last_task })`. You can resume with `subscribe_to_task` or `wait_for_task`, or let the client do it (below).
 - **Stopping and cleanup:** to stop early, cancel the calling fiber, for example with `Eio.Fiber.first` or `Eio.Time.with_timeout`. If `on_event` raises, the exception propagates to the caller. In every case the connection is closed.
 - **Capability check:** when the client was built from an Agent Card that does not declare `capabilities.streaming`, the call fails locally with `Unsupported_capability`.
+- **Final state:** the result folds every update into the task. If you only consume the events (for example A2UI agents that send many status messages), pass `~accumulate:false`: the outcome's task then carries its id, context, status and metadata but no history or artifacts, and memory stays constant.
+
+#### Reading events one at a time
+
+`open_streaming_message` (and `open_task_subscription`) return an `Event_stream.t` that you read with `Event_stream.next`. It returns once the agent has accepted the request and sent its first event, so a relay can decide its own status code before writing anything:
+
+```ocaml
+Eio.Switch.run @@ fun sw ->
+match open_streaming_message client ~sw ~accumulate:false (Message.user_text "Build the UI") with
+| Error e -> respond_502 (Error.to_string e)   (* refused, HTTP error, or agent error *)
+| Ok stream ->
+    let rec relay () =
+      match Event_stream.next stream with
+      | Ok (Some ev) -> write_sse (Codec.stream_response_to_json ev); relay ()
+      | Ok None -> ()                            (* ended normally *)
+      | Error e -> log_error e                   (* e.g. Stream_ended *)
+    in
+    relay ()
+```
+
+- `next` returns `Ok None` after the last event, and the same error as `send_streaming_message` if the stream ends otherwise; `Event_stream.outcome` then gives the final state. Reconnection works as for the push form.
+- An event is read from the socket only after the previous one was taken with `next`.
+- `Event_stream.close` stops reading and releases the connection; leaving `sw` does the same.
 
 #### Resuming broken streams
 
@@ -222,6 +245,13 @@ create ~binding:Http_json ~clock ~transport (Uri.of_string "https://agent.exampl
 
 (* Known v0.3 endpoint, no Agent Card: *)
 create ~protocol_version:V0_3 ~clock ~transport (Uri.of_string "https://agent.example.com/a2a")
+```
+
+The card picks the interface, but the URL it advertises is not always reachable: an agent in a container often builds its card from its bind address (`http://127.0.0.1:8080/a2a`). `~rewrite_endpoint` maps that URL to the one to use; `rebase_endpoint ~onto` keeps its path and takes the scheme, host and port of the address you reached the card at:
+
+```ocaml
+let base = Uri.of_string "http://agent.default.svc:8080" in
+connect ~rewrite_endpoint:(rebase_endpoint ~onto:base) ~clock ~transport base
 ```
 
 With HTTP+JSON, operations map to resource paths under the endpoint (`POST /message:send`, `GET /tasks/{id}`, `GET /tasks?status=…`, `POST /tasks/{id}:cancel`, …), prefixed with `/{tenant}` when a tenant is set. Bodies use `application/a2a+json`. Errors are `google.rpc.Status` objects; the `reason` of their `google.rpc.ErrorInfo` detail (`TASK_NOT_FOUND`, …) gives the error code.
@@ -303,7 +333,29 @@ let transport = A2a_client.Transport.pooled ~sw ~clock (Eio.Stdenv.net env) in
   type t = sw:Eio.Switch.t -> Transport.request -> Transport.response
   ```
 
-  Attach any connection you open to `sw`. The same interface makes the client easy to mock in tests (see `test/mock.ml`).
+  Attach any connection you open to `sw`.
+
+### Testing code that uses the client
+
+The `a2a-client.testing` library is a scripted agent behind a `Transport.t`. Replies are typed values, encoded in the wire format of the agent's protocol version and binding, so tests need neither a network nor hand-written JSON-RPC or SSE:
+
+```ocaml
+module T = A2a_client_testing
+
+let agent =
+  T.agent ~clock (fun req ->
+      match T.rpc_method req with
+      | Some "SendStreamingMessage" ->
+          T.Reply.stream
+            [ T.Step.event (Task task); T.Step.event (Status_update working); T.Step.drop ]
+      | _ -> T.Reply.error Method_not_found "unexpected")
+in
+let client = A2a_client.create ~clock ~transport:(T.transport agent) endpoint in
+...
+T.requests agent   (* what the client sent *)
+```
+
+Replies cover results (`send_message_response`, `task`), agent errors (`error`), any HTTP response (`http ~status:500 "boom"`), refused connections (`refuse`) and delays (`after`). Streams are lists of steps: events, in-band errors, raw bytes, pauses, a dropped connection (`drop`) or silence (`hang`). Pass `~protocol_version` and `~binding` to `T.agent` to answer as a 0.3 or REST agent.
 
 ### Logging
 
@@ -356,6 +408,7 @@ These choices follow the official SDKs:
 | `Transport` | HTTP abstraction, and the cohttp-eio implementations (`cohttp`, `pooled`) |
 | `Lifecycle` | `Outcome` classification and folding stream events into a task |
 | `Error` | Error type and A2A error codes |
+| `A2a_client_testing` | Scripted agent for tests (library `a2a-client.testing`) |
 
 The API reference is generated from the `.mli` files with `dune build @doc`.
 

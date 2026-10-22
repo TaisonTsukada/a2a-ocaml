@@ -36,4 +36,8 @@ val apply : Task.t option -> Stream_response.t -> Task.t option
       (once per message id) and merges its metadata.
     - An artifact update adds or replaces the artifact by id, or appends its
       parts when [append] is set.
-    - An event for another task id starts a fresh snapshot. *)
+    - An event for another task id starts a fresh snapshot.
+
+    Each call takes time linear in the size of the task. The streaming
+    operations fold incrementally instead, in time linear in the number of
+    events overall. *)

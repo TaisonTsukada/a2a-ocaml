@@ -1,3 +1,30 @@
+## 0.3.0
+
+- Pull-based streaming: `open_streaming_message` and
+  `open_task_subscription` return an `Event_stream.t` read with
+  `Event_stream.next`. They return once the agent has accepted the
+  request and sent its first event, so refusals, HTTP errors and agent
+  errors (also in-band ones) are known before anything is relayed. Events
+  are read only as the caller takes them; `Event_stream.close` or leaving
+  the switch releases the connection. Reconnection works as for the push
+  form, which is unchanged.
+- `?accumulate:false` on streaming calls tracks only the task's id,
+  context, status and metadata, so memory stays constant on long streams.
+- Folding stream events is linear: 0.2.2 copied the task history on every
+  status update and the parts of an artifact on every appended chunk,
+  which was quadratic in the number of events.
+- `connect` and `of_agent_card` take `?rewrite_endpoint` to use another
+  URL than the one the Agent Card advertises, and `rebase_endpoint ~onto`
+  moves it onto the host the card was fetched from (agents in containers
+  often advertise their bind address).
+- New library `a2a-client.testing`: a scripted agent behind a
+  `Transport.t`, with typed replies encoded for any protocol version and
+  binding.
+- `Error.Code.to_reason`, the inverse of `of_reason`.
+- The opam file carries the version, so pins and lock files show which
+  release is used.
+- The package is on the opam repository: `opam install a2a-client`.
+
 ## 0.2.2
 
 - The HTTP and connection pool tests run over an in-memory Eio network
