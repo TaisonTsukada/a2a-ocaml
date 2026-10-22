@@ -16,7 +16,7 @@ let part_to_json (p : Part.t) : json =
     match p.content with
     | Text s -> ("text", `String s)
     | Raw b -> ("raw", `String (Base64.encode_string b))
-    | Url u -> ("url", `String u)
+    | Url u -> ("url", uri_json u)
     | Data v -> ("data", v)
   in
   `Assoc
@@ -36,7 +36,7 @@ let part : Part.t decoder =
     | [ "raw" ] ->
         let* s = D.field "raw" D.string kvs in
         base64_decode s |> D.in_path "raw" |> Result.map (fun b -> Part.Raw b)
-    | [ "url" ] -> D.field "url" D.string kvs |> Result.map (fun s -> Part.Url s)
+    | [ "url" ] -> D.field "url" D.uri kvs |> Result.map (fun u -> Part.Url u)
     | [ "data" ] -> Ok (Part.Data (List.assoc "data" kvs))
     | [] -> D.fail "Part has none of text/raw/url/data"
     | names ->
@@ -91,35 +91,44 @@ let authentication_info : Authentication_info.t decoder =
   let* credentials = D.string_opt_field "credentials" kvs in
   Ok { Authentication_info.scheme; credentials }
 
+(* 1.0 has one flat message for both: a config sent with a message has no
+   [taskId]. *)
+let push_notification_config_fields (c : Push_notification_config.t) =
+  str "id" c.id
+  @ [ ("url", uri_json c.url) ]
+  @ str "token" c.token
+  @ opt "authentication" authentication_info_to_json c.authentication
+
+let push_notification_config_to_json c : json = `Assoc (push_notification_config_fields c)
+
 let task_push_notification_config_to_json (c : Task_push_notification_config.t) : json =
   `Assoc
-    (str "tenant" c.tenant @ str "id" c.id
-    @ (if c.task_id = "" then [] else [ ("taskId", `String c.task_id) ])
-    @ [ ("url", `String c.url) ]
-    @ str "token" c.token
-    @ opt "authentication" authentication_info_to_json c.authentication)
+    (str "tenant" c.tenant @ [ ("taskId", `String c.task_id) ]
+    @ push_notification_config_fields c.config)
 
 let task_push_notification_config : Task_push_notification_config.t decoder =
   D.obj @@ fun kvs ->
   let* tenant = D.string_opt_field "tenant" kvs in
   let* id = D.string_opt_field "id" kvs in
-  let* task_id = D.string_field_default "taskId" kvs in
-  let* url = D.field "url" D.string kvs in
+  let* task_id = non_empty "taskId" D.string kvs in
+  let* url = D.uri_field "url" kvs in
   let* token = D.string_opt_field "token" kvs in
   let* authentication = D.field_opt "authentication" authentication_info kvs in
-  Ok { Task_push_notification_config.tenant; id; task_id; url; token; authentication }
+  Ok
+    { Task_push_notification_config.tenant; task_id;
+      config = { Push_notification_config.id; url; token; authentication } }
 
 let list_task_push_notification_configs_response :
     List_task_push_notification_configs_response.t decoder =
   D.obj @@ fun kvs ->
   let* configs = D.list_field "configs" task_push_notification_config kvs in
-  let* next_page_token = D.string_field_default "nextPageToken" kvs in
+  let* next_page_token = D.string_opt_field "nextPageToken" kvs in
   Ok { List_task_push_notification_configs_response.configs; next_page_token }
 
 let list_tasks_response : List_tasks_response.t decoder =
   D.obj @@ fun kvs ->
   let* tasks = D.list_field "tasks" task kvs in
-  let* next_page_token = D.string_field_default "nextPageToken" kvs in
+  let* next_page_token = D.string_opt_field "nextPageToken" kvs in
   let* page_size = D.field_default "pageSize" D.int ~default:0 kvs in
   let* total_size = D.field_default "totalSize" D.int ~default:0 kvs in
   Ok { List_tasks_response.tasks; next_page_token; page_size; total_size }
@@ -127,7 +136,7 @@ let list_tasks_response : List_tasks_response.t decoder =
 let send_message_configuration_to_json (c : Send_message_configuration.t) : json =
   `Assoc
     (str_list "acceptedOutputModes" c.accepted_output_modes
-    @ opt "taskPushNotificationConfig" task_push_notification_config_to_json
+    @ opt "taskPushNotificationConfig" push_notification_config_to_json
         c.push_notification_config
     @ int "historyLength" c.history_length
     @ flag "returnImmediately" c.return_immediately)
@@ -173,17 +182,23 @@ let list_task_push_notification_configs_request_to_json
 let get_extended_agent_card_request_to_json (r : Get_extended_agent_card_request.t) : json =
   `Assoc (str "tenant" r.tenant)
 
+let known of_string s = match of_string s with Some v -> Known v | None -> Unknown s
+
+let interface ~url ~binding ~version ~tenant =
+  { Agent_interface.url; tenant; protocol_binding = known Protocol_binding.of_string binding;
+    protocol_version = known Protocol_version.of_string version }
+
 let agent_interface : Agent_interface.t decoder =
   D.obj @@ fun kvs ->
-  let* url = D.field "url" D.string kvs in
-  let* protocol_binding = D.field "protocolBinding" D.string kvs in
+  let* url = D.uri_field "url" kvs in
+  let* binding = D.field "protocolBinding" D.string kvs in
   let* tenant = D.string_opt_field "tenant" kvs in
-  let* protocol_version = D.string_field_default "protocolVersion" kvs in
-  Ok { Agent_interface.url; protocol_binding; tenant; protocol_version }
+  let* version = D.string_field_default "protocolVersion" kvs in
+  Ok (interface ~url ~binding ~version ~tenant)
 
 let agent_provider : Agent_provider.t decoder =
   D.obj @@ fun kvs ->
-  let* url = D.string_field_default "url" kvs in
+  let* url = D.uri_field_default "url" kvs in
   let* organization = D.string_field_default "organization" kvs in
   Ok { Agent_provider.url; organization }
 
@@ -197,10 +212,10 @@ let agent_extension : Agent_extension.t decoder =
 
 let agent_capabilities : Agent_capabilities.t decoder =
   D.obj @@ fun kvs ->
-  let* streaming = D.field_opt "streaming" D.bool kvs in
-  let* push_notifications = D.field_opt "pushNotifications" D.bool kvs in
+  let* streaming = D.bool_field "streaming" kvs in
+  let* push_notifications = D.bool_field "pushNotifications" kvs in
   let* extensions = D.list_field "extensions" agent_extension kvs in
-  let* extended_agent_card = D.field_opt "extendedAgentCard" D.bool kvs in
+  let* extended_agent_card = D.bool_field "extendedAgentCard" kvs in
   Ok { Agent_capabilities.streaming; push_notifications; extensions; extended_agent_card }
 
 let security_requirement : Security_requirement.t decoder =
@@ -212,9 +227,9 @@ let scopes kvs = D.field_default "scopes" (D.string_map D.string) ~default:[] kv
 
 let authorization_code_flow =
   D.obj @@ fun kvs ->
-  let* authorization_url = D.string_field_default "authorizationUrl" kvs in
-  let* token_url = D.string_field_default "tokenUrl" kvs in
-  let* refresh_url = D.string_opt_field "refreshUrl" kvs in
+  let* authorization_url = D.uri_field_default "authorizationUrl" kvs in
+  let* token_url = D.uri_field_default "tokenUrl" kvs in
+  let* refresh_url = D.uri_opt_field "refreshUrl" kvs in
   let* scopes = scopes kvs in
   let* pkce_required = D.bool_field "pkceRequired" kvs in
   Ok (Oauth_flow.Authorization_code
@@ -222,30 +237,30 @@ let authorization_code_flow =
 
 let client_credentials_flow =
   D.obj @@ fun kvs ->
-  let* token_url = D.string_field_default "tokenUrl" kvs in
-  let* refresh_url = D.string_opt_field "refreshUrl" kvs in
+  let* token_url = D.uri_field_default "tokenUrl" kvs in
+  let* refresh_url = D.uri_opt_field "refreshUrl" kvs in
   let* scopes = scopes kvs in
   Ok (Oauth_flow.Client_credentials { token_url; refresh_url; scopes })
 
 let implicit_flow =
   D.obj @@ fun kvs ->
-  let* authorization_url = D.string_opt_field "authorizationUrl" kvs in
-  let* refresh_url = D.string_opt_field "refreshUrl" kvs in
+  let* authorization_url = D.uri_opt_field "authorizationUrl" kvs in
+  let* refresh_url = D.uri_opt_field "refreshUrl" kvs in
   let* scopes = scopes kvs in
   Ok (Oauth_flow.Implicit { authorization_url; refresh_url; scopes })
 
 let password_flow =
   D.obj @@ fun kvs ->
-  let* token_url = D.string_opt_field "tokenUrl" kvs in
-  let* refresh_url = D.string_opt_field "refreshUrl" kvs in
+  let* token_url = D.uri_opt_field "tokenUrl" kvs in
+  let* refresh_url = D.uri_opt_field "refreshUrl" kvs in
   let* scopes = scopes kvs in
   Ok (Oauth_flow.Password { token_url; refresh_url; scopes })
 
 let device_code_flow =
   D.obj @@ fun kvs ->
-  let* device_authorization_url = D.string_field_default "deviceAuthorizationUrl" kvs in
-  let* token_url = D.string_field_default "tokenUrl" kvs in
-  let* refresh_url = D.string_opt_field "refreshUrl" kvs in
+  let* device_authorization_url = D.uri_field_default "deviceAuthorizationUrl" kvs in
+  let* token_url = D.uri_field_default "tokenUrl" kvs in
+  let* refresh_url = D.uri_opt_field "refreshUrl" kvs in
   let* scopes = scopes kvs in
   Ok (Oauth_flow.Device_code { device_authorization_url; token_url; refresh_url; scopes })
 
@@ -282,13 +297,13 @@ let security_scheme : Security_scheme.t decoder =
     D.obj @@ fun kvs ->
     let* description = description kvs in
     let* flows = D.field_opt "flows" flows kvs in
-    let* oauth2_metadata_url = D.string_opt_field "oauth2MetadataUrl" kvs in
+    let* oauth2_metadata_url = D.uri_opt_field "oauth2MetadataUrl" kvs in
     Ok (Security_scheme.Oauth2 { description; flows; oauth2_metadata_url })
   in
   let oidc =
     D.obj @@ fun kvs ->
     let* description = description kvs in
-    let* open_id_connect_url = D.string_field_default "openIdConnectUrl" kvs in
+    let* open_id_connect_url = D.uri_field_default "openIdConnectUrl" kvs in
     Ok (Security_scheme.Open_id_connect { description; open_id_connect_url })
   in
   let mtls =
@@ -350,19 +365,18 @@ let legacy_interfaces kvs =
   match url with
   | None -> Ok []
   | Some url ->
+      let url = Uri.of_string url in
       let* binding = D.field_default "preferredTransport" D.string ~default:"JSONRPC" kvs in
       let* version = D.field_default "protocolVersion" D.string ~default:"0.3.0" kvs in
       let additional =
         D.obj @@ fun kvs ->
-        let* url = D.field "url" D.string kvs in
+        let* url = D.uri_field "url" kvs in
         let* transport = D.field "transport" D.string kvs in
         Ok (url, transport)
       in
       let* more = D.list_field "additionalInterfaces" additional kvs in
-      let iface (url, protocol_binding) =
-        { Agent_interface.url; protocol_binding; tenant = None; protocol_version = version }
-      in
-      let more = List.filter (fun (u, b) -> not (u = url && b = binding)) more in
+      let iface (url, binding) = interface ~url ~binding ~version ~tenant:None in
+      let more = List.filter (fun (u, b) -> not (Uri.equal u url && b = binding)) more in
       Ok (List.map iface ((url, binding) :: more))
 
 let agent_card : Agent_card.t decoder =
@@ -376,15 +390,13 @@ let agent_card : Agent_card.t decoder =
   in
   let* provider = D.field_opt "provider" agent_provider kvs in
   let* version = D.string_field_default "version" kvs in
-  let* documentation_url = D.string_opt_field "documentationUrl" kvs in
+  let* documentation_url = D.uri_opt_field "documentationUrl" kvs in
   let* capabilities =
     D.field_default "capabilities" agent_capabilities ~default:Agent_capabilities.empty kvs
   in
-  let* legacy_extended = D.field_opt "supportsAuthenticatedExtendedCard" D.bool kvs in
+  let* legacy_extended = D.bool_field "supportsAuthenticatedExtendedCard" kvs in
   let capabilities =
-    if capabilities.extended_agent_card = None then
-      { capabilities with extended_agent_card = legacy_extended }
-    else capabilities
+    { capabilities with extended_agent_card = capabilities.extended_agent_card || legacy_extended }
   in
   let* security_schemes =
     D.field_default "securitySchemes" (D.string_map security_scheme) ~default:[] kvs
@@ -394,7 +406,7 @@ let agent_card : Agent_card.t decoder =
   let* default_output_modes = D.list_field "defaultOutputModes" D.string kvs in
   let* skills = D.list_field "skills" agent_skill kvs in
   let* signatures = D.list_field "signatures" agent_card_signature kvs in
-  let* icon_url = D.string_opt_field "iconUrl" kvs in
+  let* icon_url = D.uri_opt_field "iconUrl" kvs in
   Ok
     { Agent_card.name; description; supported_interfaces; provider; version;
       documentation_url; capabilities; security_schemes; security_requirements;

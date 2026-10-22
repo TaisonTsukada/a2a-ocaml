@@ -1,6 +1,7 @@
 open A2a_client
 
-(* The list-based fold from 0.2.2, kept as the reference semantics. *)
+(* The list-based fold from 0.2.2, kept as the reference semantics (with
+   absent ids as [None] rather than [""]). *)
 module Reference = struct
   let replace_or_add_artifact (artifacts : Artifact.t list) (a : Artifact.t) =
     if List.exists (fun (x : Artifact.t) -> x.artifact_id = a.artifact_id) artifacts then
@@ -33,7 +34,7 @@ module Reference = struct
       | Some m
         when not
                (List.exists
-                  (fun (h : Message.t) -> h.message_id = m.message_id && m.message_id <> "")
+                  (fun (h : Message.t) -> h.message_id = m.message_id && m.message_id <> None)
                   task.history) ->
           task.history @ [ m ]
       | _ -> task.history
@@ -42,8 +43,7 @@ module Reference = struct
       status = e.status;
       history;
       metadata = merge_metadata task.metadata e.metadata;
-      context_id =
-        (match task.context_id with None when e.context_id <> "" -> Some e.context_id | c -> c) }
+      context_id = (match task.context_id with None -> e.context_id | c -> c) }
 
   let apply (current : Task.t option) (ev : Stream_response.t) : Task.t option =
     match ev with
@@ -52,29 +52,28 @@ module Reference = struct
     | Status_update e -> (
         match current with
         | Some t when t.id = e.task_id -> Some (apply_status_update t e)
-        | _ ->
-            let context_id = if e.context_id = "" then None else Some e.context_id in
-            Some (apply_status_update (Task.make ?context_id ~id:e.task_id e.status) e))
+        | _ -> Some (apply_status_update (Task.make ?context_id:e.context_id ~id:e.task_id e.status) e))
     | Artifact_update e -> (
         match current with
         | Some t when t.id = e.task_id -> Some (apply_artifact_update t e)
         | _ ->
-            let context_id = if e.context_id = "" then None else Some e.context_id in
             Some
               (apply_artifact_update
-                 (Task.make ?context_id ~id:e.task_id (Task_status.make Task_state.Unspecified))
+                 (Task.make ?context_id:e.context_id ~id:e.task_id
+                    (Task_status.make Task_state.Unspecified))
                  e))
 end
 
-let msg ?(id = "") text = Message.make ~message_id:id ~role:Agent [ Part.text text ]
+let msg ?id text =
+  { (Message.make ~role:Agent [ Part.text text ]) with message_id = id }
 
-let status ?(task = "t-1") ?(ctx = "ctx-1") ?message ?metadata state =
+let status ?(task = "t-1") ?(ctx = Some "ctx-1") ?message ?metadata state =
   Stream_response.Status_update
     { task_id = task; context_id = ctx; status = Task_status.make ?message state; metadata }
 
 let artifact ?(task = "t-1") ?(append = false) ?metadata ?name id text =
   Stream_response.Artifact_update
-    { task_id = task; context_id = "ctx-1";
+    { task_id = task; context_id = Some "ctx-1";
       artifact = Artifact.make ?name ?metadata ~artifact_id:id [ Part.text text ];
       append; last_chunk = false; metadata = None }
 
@@ -88,7 +87,7 @@ let events =
           Artifact.make ~artifact_id:"d" [ Part.text "y" ] ]
       (Task_status.make Submitted)
   in
-  [ status ~task:"t-0" ~ctx:"" Working;
+  [ status ~task:"t-0" ~ctx:None Working;
     Stream_response.Task base;
     status ~message:(msg ~id:"h1" "dup of base history") Working;
     status ~message:(msg ~id:"m1" "one") ~metadata:[ ("a", `Int 1) ] Working;

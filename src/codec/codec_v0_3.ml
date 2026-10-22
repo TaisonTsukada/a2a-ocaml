@@ -62,7 +62,7 @@ let part_to_json (p : Part.t) : json =
     match p.content with
     | Text s -> ([ kind "text"; ("text", `String s) ], p.metadata)
     | Raw b -> ([ kind "file"; ("file", file ("bytes", `String (Base64.encode_string b))) ], p.metadata)
-    | Url u -> ([ kind "file"; ("file", file ("uri", `String u)) ], p.metadata)
+    | Url u -> ([ kind "file"; ("file", file ("uri", uri_json u)) ], p.metadata)
     | Data (`Assoc _ as v) -> ([ kind "data"; ("data", v) ], p.metadata)
     | Data v ->
         let m = Option.value p.metadata ~default:[] in
@@ -80,7 +80,7 @@ let file_content kvs =
     | Some _, None ->
         let* s = D.field "bytes" D.string kvs in
         base64_decode s |> D.in_path "bytes" |> Result.map (fun b -> Part.Raw b)
-    | None, Some _ -> D.field "uri" D.string kvs |> Result.map (fun u -> Part.Url u)
+    | None, Some _ -> D.field "uri" D.uri kvs |> Result.map (fun u -> Part.Url u)
     | None, None -> D.fail "file has neither \"bytes\" nor \"uri\""
   in
   Ok (content, filename, media_type)
@@ -161,18 +161,18 @@ let send_message_response_to_json : Send_message_response.t -> json = function
   | Task t -> task_to_json t
   | Message m -> message_to_json m
 
-let push_notification_config_to_json (c : Task_push_notification_config.t) : json =
+let push_notification_config_to_json (c : Push_notification_config.t) : json =
   let auth (a : Authentication_info.t) =
     `Assoc ([ ("schemes", `List [ `String a.scheme ]) ] @ str "credentials" a.credentials)
   in
   `Assoc
-    (str "id" c.id @ [ ("url", `String c.url) ] @ str "token" c.token
+    (str "id" c.id @ [ ("url", uri_json c.url) ] @ str "token" c.token
     @ opt "authentication" auth c.authentication)
 
 let task_push_notification_config_to_json (c : Task_push_notification_config.t) : json =
   `Assoc
     [ ("taskId", `String c.task_id);
-      ("pushNotificationConfig", push_notification_config_to_json c) ]
+      ("pushNotificationConfig", push_notification_config_to_json c.config) ]
 
 let task_push_notification_config : Task_push_notification_config.t decoder =
   let auth =
@@ -182,21 +182,24 @@ let task_push_notification_config : Task_push_notification_config.t decoder =
     Ok { Authentication_info.scheme = String.concat "," schemes; credentials }
   in
   D.obj @@ fun kvs ->
-  let* task_id = D.string_field_default "taskId" kvs in
-  D.field "pushNotificationConfig"
-    (D.obj @@ fun kvs ->
-     let* id = D.string_opt_field "id" kvs in
-     let* url = D.field "url" D.string kvs in
-     let* token = D.string_opt_field "token" kvs in
-     let* authentication = D.field_opt "authentication" auth kvs in
-     Ok { Task_push_notification_config.tenant = None; id; task_id; url; token; authentication })
-    kvs
+  let* task_id = non_empty "taskId" D.string kvs in
+  let* config =
+    D.field "pushNotificationConfig"
+      (D.obj @@ fun kvs ->
+       let* id = D.string_opt_field "id" kvs in
+       let* url = D.uri_field "url" kvs in
+       let* token = D.string_opt_field "token" kvs in
+       let* authentication = D.field_opt "authentication" auth kvs in
+       Ok { Push_notification_config.id; url; token; authentication })
+      kvs
+  in
+  Ok { Task_push_notification_config.tenant = None; task_id; config }
 
 let list_task_push_notification_configs_response :
     List_task_push_notification_configs_response.t decoder =
  fun j ->
   let* configs = D.list task_push_notification_config j in
-  Ok { List_task_push_notification_configs_response.configs; next_page_token = "" }
+  Ok { List_task_push_notification_configs_response.configs; next_page_token = None }
 
 let send_message_configuration_to_json (c : Send_message_configuration.t) : json =
   `Assoc

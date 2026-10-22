@@ -13,17 +13,16 @@ let task state = Task.make ~context_id:"ctx-1" ~id:"t-1" (Task_status.make state
 
 let status ?message state =
   Stream_response.Status_update
-    { task_id = "t-1"; context_id = "ctx-1"; status = Task_status.make ?message state;
+    { task_id = "t-1"; context_id = Some "ctx-1"; status = Task_status.make ?message state;
       metadata = None }
 
 let ui n = status ~message:(agent_msg (Printf.sprintf "ui-%d" n) "{}") Working
 
 (* The five cases of a BFF that relays a stream and answers 502 when the
    agent did not accept the request. *)
-let relay ?(protocol_version = Protocol_version.V1_0) ?(binding = Protocol_binding.Jsonrpc) clock
-    reply =
-  let agent = T.agent ~protocol_version ~binding ~clock (fun _ -> reply) in
-  let client = create ~clock ~transport:(T.transport agent) ~protocol_version ~binding endpoint in
+let relay ?(protocol = Protocol.default) clock reply =
+  let agent = T.agent ~protocol ~clock (fun _ -> reply) in
+  let client = create ~clock ~transport:(T.transport agent) ~protocol endpoint in
   Eio.Switch.run @@ fun sw ->
   match open_streaming_message client ~sw (Message.user_text "go") with
   | Error e -> `Bad_gateway e
@@ -65,16 +64,15 @@ let test_wire_formats () =
   run @@ fun clock ->
   let events = [ Stream_response.Task (task Working); ui 1; status Completed ] in
   List.iter
-    (fun (name, protocol_version, binding) ->
-      (match relay ~protocol_version ~binding clock (Reply.stream (List.map Step.event events)) with
+    (fun (name, protocol) ->
+      (match relay ~protocol clock (Reply.stream (List.map Step.event events)) with
        | `Relayed ([ Task _; Status_update _; Status_update { status = { state = Completed; _ }; _ } ], None) -> ()
        | _ -> Alcotest.failf "%s: events not relayed" name);
-      match relay ~protocol_version ~binding clock (Reply.error ~status:404 Task_not_found "gone") with
+      match relay ~protocol clock (Reply.error ~status:404 Task_not_found "gone") with
       | `Bad_gateway (Error.Rpc_error { code = Task_not_found; message = "gone"; _ }) -> ()
       | `Bad_gateway e -> Alcotest.failf "%s: %s" name (Error.to_string e)
       | `Relayed _ -> Alcotest.failf "%s: expected an error" name)
-    [ ("1.0 JSON-RPC", Protocol_version.V1_0, Protocol_binding.Jsonrpc);
-      ("1.0 REST", V1_0, Http_json); ("0.3 JSON-RPC", V0_3, Jsonrpc) ]
+    [ ("1.0 JSON-RPC", Protocol.V1_0 Jsonrpc); ("1.0 REST", V1_0 Http_json); ("0.3 JSON-RPC", V0_3) ]
 
 let test_outcome_and_end () =
   run @@ fun clock ->
@@ -163,7 +161,7 @@ let test_accumulate () =
            :: List.init n (fun i -> Step.event (ui i))
            @ [ Step.event
                  (Artifact_update
-                    { task_id = "t-1"; context_id = "ctx-1";
+                    { task_id = "t-1"; context_id = Some "ctx-1";
                       artifact = Artifact.make ~artifact_id:"a" [ Part.text "x" ];
                       append = false; last_chunk = true; metadata = None });
                Step.event (status Completed) ]))

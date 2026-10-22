@@ -30,6 +30,17 @@ module Reconnect = struct
     { max_attempts; delay; max_delay; backoff }
 end
 
+module Poll = struct
+  type t = { interval : float; max_interval : float; backoff : float }
+
+  let make ?(interval = 1.0) ?(max_interval = 10.0) ?(backoff = 1.5) () =
+    if interval <= 0. || backoff < 1. then
+      invalid_arg "Poll.make: need interval > 0 and backoff >= 1";
+    { interval; max_interval; backoff }
+
+  let default = make ()
+end
+
 type t = {
   transport : Transport.t;
   clock : Eio.Time.Mono.ty Eio.Resource.t;
@@ -52,18 +63,18 @@ let default_max_response_size = 16 * 1024 * 1024
 let create ?(auth = Auth.none) ?(headers = []) ?tenant ?(extensions = [])
     ?(timeout = default_timeout) ?stream_idle_timeout
     ?(max_response_size = default_max_response_size) ?(reconnect = Reconnect.none) ?card
-    ?(protocol_version = Protocol_version.V1_0) ?(binding = Protocol_binding.Jsonrpc) ~clock
-    ~transport endpoint =
+    ?(protocol = Protocol.default) ~clock ~transport endpoint =
   let timeout = Some timeout in
   { transport; clock = (clock :> Eio.Time.Mono.ty Eio.Resource.t); endpoint;
     tenant; auth; headers; extensions; timeout; stream_idle_timeout;
-    max_response_size; reconnect; card; wire = Wire.make protocol_version binding }
+    max_response_size; reconnect; card; wire = Wire.make protocol }
 
 let endpoint t = t.endpoint
 let agent_card t = t.card
 let with_agent_card t card = { t with card = Some card }
-let version t = t.wire.version
-let binding t = t.wire.binding
+let protocol t = t.wire.protocol
+let version t = Protocol.version (protocol t)
+let binding t = Protocol.binding (protocol t)
 
 let redact_uri u = Uri.with_query (Uri.with_userinfo u None) [] |> Uri.to_string
 
@@ -143,7 +154,7 @@ let request_headers t ~accept (r : _ Op.request) =
         List.map (fun name -> (name, v)) t.wire.extension_headers
   in
   (match r.body with Some _ -> [ ("Content-Type", r.content_type) ] | None -> [])
-  @ [ ("Accept", accept); ("A2A-Version", Protocol_version.to_string t.wire.version) ]
+  @ [ ("Accept", accept); ("A2A-Version", Protocol_version.to_string (version t)) ]
   @ extensions @ t.headers @ t.auth ()
 
 let http_request t (r : _ Op.request) ~accept ~extra_headers =
@@ -181,11 +192,11 @@ let optional t what = function
       Error
         (Error.Unsupported_capability
            (Printf.sprintf "%s is not part of protocol %s" what
-              (Protocol_version.to_string t.wire.version)))
+              (Protocol_version.to_string (version t))))
 
 let require_capability t what declared =
   match t.card with
-  | Some card when declared card <> Some true ->
+  | Some card when not (declared card) ->
       Error (Error.Unsupported_capability (Printf.sprintf "the Agent Card does not declare %s" what))
   | _ -> Ok ()
 

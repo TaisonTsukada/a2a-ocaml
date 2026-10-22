@@ -17,7 +17,7 @@ let test_message_wire_format () =
     Message.user ~message_id:"m-1" ~context_id:"c-1" ~task_id:"t-1"
       [ Part.text "hi";
         Part.raw ~filename:"a.bin" ~media_type:"application/octet-stream" "\000\001";
-        Part.url ~media_type:"image/png" "https://example.com/a.png";
+        Part.url ~media_type:"image/png" (Uri.of_string "https://example.com/a.png");
         Part.data (`Assoc [ ("k", `Int 1) ]) ]
   in
   Alcotest.check json "message"
@@ -80,10 +80,10 @@ let test_roundtrip () =
   in
   let events =
     [ Stream_response.Task task;
-      Message (Message.make ~message_id:"r" ~role:Agent [ Part.url "u" ]);
-      Status_update { task_id = "t"; context_id = "c"; status = Task_status.make Working; metadata = None };
+      Message (Message.make ~message_id:"r" ~role:Agent [ Part.url (Uri.of_string "u") ]);
+      Status_update { task_id = "t"; context_id = Some "c"; status = Task_status.make Working; metadata = None };
       Artifact_update
-        { task_id = "t"; context_id = "c"; artifact = Artifact.make ~artifact_id:"a" [ Part.text "y" ];
+        { task_id = "t"; context_id = Some "c"; artifact = Artifact.make ~artifact_id:"a" [ Part.text "y" ];
           append = true; last_chunk = true; metadata = Some [ ("x", `Null) ] } ]
   in
   List.iter
@@ -113,7 +113,7 @@ let test_decode_task () =
   (match (List.hd t.artifacts).parts with
    | [ { content = Text _; _ };
        { content = Raw _; filename = Some "x.png"; media_type = Some "image/png"; _ };
-       { content = Url "https://e.com/f.pdf"; _ } ] -> ()
+       { content = Url u; _ } ] when Uri.to_string u = "https://e.com/f.pdf" -> ()
    | _ -> Alcotest.fail "parts");
   Alcotest.(check bool) "history role" true ((List.hd t.history).role = User);
   List.iter
@@ -177,15 +177,20 @@ let v03_card =
 let test_agent_card () =
   let card = get "card" (decode Codec.agent_card v03_card) in
   let ifaces =
-    List.map (fun (i : Agent_interface.t) -> (i.url, i.protocol_binding, i.protocol_version))
+    let show to_string = function Known x -> to_string x | Unknown s -> "?" ^ s in
+    List.map
+      (fun (i : Agent_interface.t) ->
+        ( Uri.to_string i.url,
+          show Protocol_binding.to_string i.protocol_binding,
+          show Protocol_version.to_string i.protocol_version ))
       card.supported_interfaces
   in
   Alcotest.(check (list (triple string string string))) "interfaces (main first, deduplicated)"
-    [ ("https://georoute-agent.example.com/a2a/v1", "JSONRPC", "0.3.0");
-      ("https://georoute-agent.example.com/a2a/grpc", "GRPC", "0.3.0");
-      ("https://georoute-agent.example.com/a2a/json", "HTTP+JSON", "0.3.0") ]
+    [ ("https://georoute-agent.example.com/a2a/v1", "JSONRPC", "0.3");
+      ("https://georoute-agent.example.com/a2a/grpc", "?GRPC", "0.3");
+      ("https://georoute-agent.example.com/a2a/json", "HTTP+JSON", "0.3") ]
     ifaces;
-  Alcotest.(check (option bool)) "extended card" (Some true) card.capabilities.extended_agent_card;
+  Alcotest.(check bool) "extended card" true card.capabilities.extended_agent_card;
   Alcotest.(check (list (list (pair string (list string))))) "security"
     [ [ ("google", [ "openid"; "profile"; "email" ]) ] ] card.security_requirements;
   Alcotest.(check (list (list (pair string (list string))))) "skill security"
@@ -200,7 +205,7 @@ let test_agent_card () =
    | Security_scheme.Oauth2 { flows = Some (Oauth_flow.Authorization_code _); _ } -> ()
    | _ -> Alcotest.fail "oauth2");
   match select_interface card with
-  | Ok i -> Alcotest.(check string) "0.3 JSON-RPC" "https://georoute-agent.example.com/a2a/v1" i.url
+  | Ok i -> Alcotest.(check string) "0.3 JSON-RPC" "https://georoute-agent.example.com/a2a/v1" (Uri.to_string i.url)
   | Error e -> Alcotest.fail (Error.to_string e)
 
 let test_negotiation () =
@@ -213,7 +218,7 @@ let test_negotiation () =
   in
   let url ?protocol_version c =
     match select_interface ?protocol_version c with
-    | Ok i -> i.url
+    | Ok i -> (Uri.to_string i.url)
     | Error e -> Alcotest.fail (Error.to_string e)
   in
   Alcotest.(check string) "prefers 1.0" "http://h/v1" (url both);
@@ -226,7 +231,7 @@ let test_negotiation () =
   Alcotest.(check int) "only supportedInterfaces" 1 (List.length mixed.supported_interfaces);
   let bare = card {|{"name":"a","url":"http://h/x"}|} in
   match bare.supported_interfaces with
-  | [ { protocol_binding = "JSONRPC"; protocol_version = "0.3.0"; _ } ] -> ()
+  | [ { protocol_binding = Known Jsonrpc; protocol_version = Known V0_3; _ } ] -> ()
   | _ -> Alcotest.fail "defaults"
 
 let v03_task ?(state = "working") id : Yojson.Safe.t =
@@ -235,7 +240,7 @@ let v03_task ?(state = "working") id : Yojson.Safe.t =
       ("status", `Assoc [ ("state", `String state) ]) ]
 
 let v03_client ?extensions ~clock transport =
-  create ~clock ~transport ?extensions ~tenant:"never-sent" ~protocol_version:V0_3
+  create ~clock ~transport ?extensions ~tenant:"never-sent" ~protocol:V0_3
     (Uri.of_string "http://agent.test/a2a")
 
 let test_client_unary () =

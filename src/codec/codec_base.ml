@@ -7,6 +7,8 @@ type 'a decoder = 'a D.t
 
 let opt name f = function None -> [] | Some v -> [ (name, f v) ]
 let str name = opt name (fun s -> `String s)
+let uri_json u = `String (Uri.to_string u)
+let uri name = opt name uri_json
 let int name = opt name (fun n -> `Int n)
 let str_list name = function [] -> [] | l -> [ (name, `List (List.map (fun s -> `String s) l)) ]
 let lst name f = function [] -> [] | l -> [ (name, `List (List.map f l)) ]
@@ -72,7 +74,7 @@ module Objects (F : FORMAT) = struct
   let message_to_json (m : Message.t) : json =
     `Assoc
       (F.tag "message"
-      @ [ ("messageId", `String m.message_id) ]
+      @ str "messageId" m.message_id
       @ str "contextId" m.context_id @ str "taskId" m.task_id
       @ F.role_field m.role
       @ [ ("parts", `List (List.map F.part_to_json m.parts)) ]
@@ -82,7 +84,7 @@ module Objects (F : FORMAT) = struct
 
   let message : Message.t decoder =
     D.obj @@ fun kvs ->
-    let* message_id = D.string_field_default "messageId" kvs in
+    let* message_id = D.string_opt_field "messageId" kvs in
     let* context_id = D.string_opt_field "contextId" kvs in
     let* task_id = D.string_opt_field "taskId" kvs in
     let* role = D.field_default "role" F.role ~default:Role.Unspecified kvs in
@@ -148,15 +150,16 @@ module Objects (F : FORMAT) = struct
   let status_update_to_json (e : Task_status_update_event.t) : json =
     `Assoc
       (F.tag "status-update"
-      @ [ ("taskId", `String e.task_id); ("contextId", `String e.context_id);
-          ("status", task_status_to_json e.status) ]
+      @ [ ("taskId", `String e.task_id) ]
+      @ str "contextId" e.context_id
+      @ [ ("status", task_status_to_json e.status) ]
       @ F.status_update_fields e
       @ meta "metadata" e.metadata)
 
   let status_update : Task_status_update_event.t decoder =
     D.obj @@ fun kvs ->
     let* task_id = non_empty "taskId" D.string kvs in
-    let* context_id = D.string_field_default "contextId" kvs in
+    let* context_id = D.string_opt_field "contextId" kvs in
     let* status = D.field "status" task_status kvs in
     let* metadata = meta_field "metadata" kvs in
     Ok { Task_status_update_event.task_id; context_id; status; metadata }
@@ -164,15 +167,16 @@ module Objects (F : FORMAT) = struct
   let artifact_update_to_json (e : Task_artifact_update_event.t) : json =
     `Assoc
       (F.tag "artifact-update"
-      @ [ ("taskId", `String e.task_id); ("contextId", `String e.context_id);
-          ("artifact", artifact_to_json e.artifact) ]
+      @ [ ("taskId", `String e.task_id) ]
+      @ str "contextId" e.context_id
+      @ [ ("artifact", artifact_to_json e.artifact) ]
       @ flag "append" e.append @ flag "lastChunk" e.last_chunk
       @ meta "metadata" e.metadata)
 
   let artifact_update : Task_artifact_update_event.t decoder =
     D.obj @@ fun kvs ->
     let* task_id = non_empty "taskId" D.string kvs in
-    let* context_id = D.string_field_default "contextId" kvs in
+    let* context_id = D.string_opt_field "contextId" kvs in
     let* artifact = D.field "artifact" artifact kvs in
     let* append = D.bool_field "append" kvs in
     let* last_chunk = D.bool_field "lastChunk" kvs in

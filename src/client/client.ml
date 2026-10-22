@@ -71,52 +71,45 @@ let open_streaming_message t ~sw ?tenant ?configuration ?metadata ?(accumulate =
 let open_task_subscription t ~sw ?tenant ?(accumulate = true) id =
   let req = { Subscribe_to_task_request.tenant = with_tenant t tenant; id } in
   Event_stream.open_ ~sw (Streaming.run t ?tenant ~accumulate t.wire.subscribe_to_task req)
-let poll ~clock ~interval ~max_interval ~backoff ~last fetch =
+
+let poll_task ~clock (policy : Poll.t) ~last fetch =
   let rec loop delay =
     let* task = fetch () in
     last := Some task;
     if Task_state.is_active task.Task.status.state then begin
       Eio.Time.Mono.sleep clock delay;
-      loop (Float.min max_interval (delay *. backoff))
+      loop (Float.min policy.max_interval (delay *. policy.backoff))
     end
     else Ok task
   in
-  loop interval
+  loop policy.interval
 
-let wait_for_task t ?tenant ?history_length ?(interval = 1.0) ?(max_interval = 10.0)
-    ?(backoff = 1.5) ~timeout id =
-  if interval <= 0. || backoff < 1. then invalid_arg "wait_for_task: need interval > 0 and backoff >= 1";
+(* Run [f] for at most [timeout] seconds; on expiry, report the last task
+   [f] saw. *)
+let with_poll_timeout t ~timeout f =
   let last = ref None in
-  match
-    Eio.Time.Timeout.run (Eio.Time.Timeout.seconds t.clock timeout) @@ fun () ->
-    Ok (poll ~clock:t.clock ~interval ~max_interval ~backoff ~last
-          (fun () -> get_task t ?tenant ?history_length id))
-  with
+  match Eio.Time.Timeout.run (Eio.Time.Timeout.seconds t.clock timeout) (fun () -> Ok (f ~last)) with
   | Ok r -> r
   | Error `Timeout -> Error (Error.Poll_timeout { last_task = !last })
+
+let wait_for_task t ?tenant ?history_length ?(poll = Poll.default) ~timeout id =
+  with_poll_timeout t ~timeout @@ fun ~last ->
+  poll_task ~clock:t.clock poll ~last (fun () -> get_task t ?tenant ?history_length id)
 
 let send_message_and_wait t ?tenant ?configuration ?metadata ?history_length
-    ?(interval = 1.0) ?(max_interval = 10.0) ?(backoff = 1.5) ~timeout message =
-  if interval <= 0. || backoff < 1. then invalid_arg "send_message_and_wait: need interval > 0 and backoff >= 1";
-  let last = ref None in
-  match
-    Eio.Time.Timeout.run (Eio.Time.Timeout.seconds t.clock timeout) @@ fun () ->
-    Ok
-      (let* resp = send_message t ?tenant ?configuration ?metadata message in
-       match resp with
-       | Send_message_response.Message m -> Ok (Lifecycle.Outcome.Message m)
-       | Task task when not (Task_state.is_active task.status.state) ->
-           Ok (Lifecycle.Outcome.of_task task)
-       | Task task ->
-           last := Some task;
-           let* task =
-             poll ~clock:t.clock ~interval ~max_interval ~backoff ~last
-               (fun () -> get_task t ?tenant ?history_length task.id)
-           in
-           Ok (Lifecycle.Outcome.of_task task))
-  with
-  | Ok r -> r
-  | Error `Timeout -> Error (Error.Poll_timeout { last_task = !last })
+    ?(poll = Poll.default) ~timeout message =
+  with_poll_timeout t ~timeout @@ fun ~last ->
+  let* resp = send_message t ?tenant ?configuration ?metadata message in
+  match resp with
+  | Send_message_response.Message m -> Ok (Lifecycle.Outcome.Message m)
+  | Task task when not (Task_state.is_active task.status.state) ->
+      Ok (Lifecycle.Outcome.of_task task)
+  | Task task ->
+      last := Some task;
+      let* task =
+        poll_task ~clock:t.clock poll ~last (fun () -> get_task t ?tenant ?history_length task.id)
+      in
+      Ok (Lifecycle.Outcome.of_task task)
 
 let well_known_path = "/.well-known/agent-card.json"
 
@@ -147,28 +140,26 @@ let default_bindings = Protocol_binding.[ Jsonrpc; Http_json ]
 
 let select ?protocol_version ?(bindings = default_bindings) (card : Agent_card.t) =
   let wanted = match protocol_version with Some v -> [ v ] | None -> Protocol_version.supported in
-  let for_version v =
-    List.find_map
-      (fun (i : Agent_interface.t) ->
-        match Protocol_binding.of_string i.protocol_binding with
-        | Some b
-          when List.mem b bindings && Wire.supports v b
-               && Protocol_version.of_string i.protocol_version = Some v ->
-            Some (i, v, b)
-        | _ -> None)
-      card.supported_interfaces
+  let usable v (i : Agent_interface.t) =
+    match (i.protocol_version, i.protocol_binding) with
+    | Known iv, Known b when iv = v && List.mem b bindings ->
+        Option.map (fun p -> (i, p)) (Protocol.make v b)
+    | _ -> None
   in
-  match List.find_map for_version wanted with
+  match List.find_map (fun v -> List.find_map (usable v) card.supported_interfaces) wanted with
   | Some found -> Ok found
   | None ->
+      let show to_string = function Known x -> to_string x | Unknown s -> s in
       let offered =
         card.supported_interfaces
         |> List.map (fun (i : Agent_interface.t) ->
-               Printf.sprintf "%s %s" i.protocol_binding i.protocol_version)
+               Printf.sprintf "%s %s"
+                 (show Protocol_binding.to_string i.protocol_binding)
+                 (show Protocol_version.to_string i.protocol_version))
         |> String.concat ", "
       in
-      let usable v =
-        let bs = List.filter (Wire.supports v) bindings in
+      let needed v =
+        let bs = List.filter (fun b -> Protocol.make v b <> None) bindings in
         Printf.sprintf "%s with protocol %s.x"
           (String.concat " or " (List.map Protocol_binding.to_string bs))
           (Protocol_version.to_string v)
@@ -176,11 +167,11 @@ let select ?protocol_version ?(bindings = default_bindings) (card : Agent_card.t
       Error
         (Error.No_compatible_interface
            (Printf.sprintf "need %s; agent offers [%s]"
-              (String.concat ", or " (List.map usable wanted))
+              (String.concat ", or " (List.map needed wanted))
               offered))
 
 let select_interface ?protocol_version ?bindings card =
-  Result.map (fun (i, _, _) -> i) (select ?protocol_version ?bindings card)
+  Result.map fst (select ?protocol_version ?bindings card)
 
 let rebase_endpoint ~onto url =
   let url = Uri.with_scheme url (Uri.scheme onto) in
@@ -190,14 +181,12 @@ let rebase_endpoint ~onto url =
 let of_agent_card ?auth ?headers ?extensions ?timeout ?stream_idle_timeout
     ?max_response_size ?reconnect ?protocol_version ?bindings ?(rewrite_endpoint = Fun.id)
     ~clock ~transport (card : Agent_card.t) =
-  let* iface, version, binding = select ?protocol_version ?bindings card in
-  let endpoint = rewrite_endpoint (Uri.of_string iface.url) in
-  Log.debug (fun m -> m "using %s %s at %s" (Protocol_binding.to_string binding)
-                (Protocol_version.to_string version) (redact_uri endpoint));
+  let* iface, protocol = select ?protocol_version ?bindings card in
+  let endpoint = rewrite_endpoint iface.url in
+  Log.debug (fun m -> m "using %a at %s" Protocol.pp protocol (redact_uri endpoint));
   Ok
     (create ?auth ?headers ?tenant:iface.tenant ?extensions ?timeout ?stream_idle_timeout
-       ?max_response_size ?reconnect ~card ~protocol_version:version ~binding ~clock ~transport
-       endpoint)
+       ?max_response_size ?reconnect ~card ~protocol ~clock ~transport endpoint)
 
 let connect ?auth ?headers ?extensions ?timeout ?stream_idle_timeout ?max_response_size
     ?reconnect ?protocol_version ?bindings ?rewrite_endpoint ~clock ~transport base =

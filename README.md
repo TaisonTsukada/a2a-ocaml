@@ -82,7 +82,7 @@ open A2a_client
 let message =
   Message.user
     [ Part.text "Describe this image";
-      Part.url ~media_type:"image/png" "https://example.com/chart.png";
+      Part.url ~media_type:"image/png" (Uri.of_string "https://example.com/chart.png");
       Part.data (`Assoc [ ("locale", `String "en-US") ]) ]
 
 let response =
@@ -110,7 +110,7 @@ match send_message_and_wait client ~timeout:300. (Message.user_text "Research AC
 | Error e -> ...
 ```
 
-- `wait_for_task client ~timeout task_id` polls a task that already exists. The delay starts at `interval` (default 1 s), grows by `backoff` (default 1.5×) and is capped at `max_interval` (default 10 s). Sleeping uses `Eio.Time`, so it never blocks the domain.
+- `wait_for_task client ~timeout task_id` polls a task that already exists. Both take `~poll:(Poll.make ~interval ~backoff ~max_interval ())`: the delay starts at `interval` (default 1 s), grows by `backoff` (default 1.5×) and is capped at `max_interval` (default 10 s). Sleeping uses `Eio.Time`, so it never blocks the domain.
 - `~timeout` is mandatory, so polling cannot run forever.
 - `get_task` and `cancel_task` are available directly.
 - `Task_state.is_terminal`, `is_interrupted` and `is_active` classify raw states.
@@ -123,11 +123,11 @@ match send_message_and_wait client ~timeout:300. (Message.user_text "Research AC
 let rec all_working ?page_token acc =
   match list_tasks client ~status:Working ~context_id:"ctx-1" ~page_size:50 ?page_token () with
   | Error e -> Error e
-  | Ok { tasks; next_page_token = ""; _ } -> Ok (acc @ tasks)
-  | Ok { tasks; next_page_token; _ } -> all_working ~page_token:next_page_token (acc @ tasks)
+  | Ok { tasks; next_page_token = None; _ } -> Ok (acc @ tasks)
+  | Ok { tasks; next_page_token = Some page_token; _ } -> all_working ~page_token (acc @ tasks)
 ```
 
-`next_page_token` is `""` on the last page. The other filters are `history_length`, `status_timestamp_after` and `include_artifacts`. Protocol 0.3 has no `ListTasks`; there the call fails locally with `Unsupported_capability`.
+`next_page_token` is `None` on the last page. The other filters are `history_length`, `status_timestamp_after` and `include_artifacts`. Protocol 0.3 has no `ListTasks`; there the call fails locally with `Unsupported_capability`.
 
 ### Push notifications
 
@@ -135,9 +135,9 @@ An agent can POST task updates to a webhook while no stream is open. Register th
 
 ```ocaml
 let push =
-  Task_push_notification_config.make ~token:"check-me"
+  Push_notification_config.make ~token:"check-me"
     ~authentication:(Authentication_info.make ~credentials:secret "Bearer")
-    "https://my-service.example.com/a2a/webhook"
+    (Uri.of_string "https://my-service.example.com/a2a/webhook")
 
 let configuration = Send_message_configuration.make ~push_notification_config:push ~return_immediately:true ()
 ```
@@ -145,7 +145,7 @@ let configuration = Send_message_configuration.make ~push_notification_config:pu
 or for an existing task:
 
 ```ocaml
-create_task_push_notification_config client (Task_push_notification_config.make ~task_id ~token url)
+create_task_push_notification_config client (Task_push_notification_config.make ~task_id push)
 get_task_push_notification_config client ~task_id config_id
 list_task_push_notification_configs client task_id
 delete_task_push_notification_config client ~task_id config_id
@@ -235,16 +235,16 @@ match A2a_client.version client with
 | V0_3 -> print_endline "talking A2A 0.3"
 
 (* Only accept 1.0: *)
-connect ~protocol_version:V1_0 ~clock ~transport base
+connect ~protocol_version:V1_0 ~clock ~transport base   (* a preference: filters the card *)
 
 (* Only use JSON-RPC: *)
 connect ~bindings:[ Jsonrpc ] ~clock ~transport base
 
 (* Known REST endpoint, no Agent Card: *)
-create ~binding:Http_json ~clock ~transport (Uri.of_string "https://agent.example.com/a2a/rest")
+create ~protocol:(V1_0 Http_json) ~clock ~transport (Uri.of_string "https://agent.example.com/a2a/rest")
 
 (* Known v0.3 endpoint, no Agent Card: *)
-create ~protocol_version:V0_3 ~clock ~transport (Uri.of_string "https://agent.example.com/a2a")
+create ~protocol:V0_3 ~clock ~transport (Uri.of_string "https://agent.example.com/a2a")
 ```
 
 The card picks the interface, but the URL it advertises is not always reachable: an agent in a container often builds its card from its bind address (`http://127.0.0.1:8080/a2a`). `~rewrite_endpoint` maps that URL to the one to use; `rebase_endpoint ~onto` keeps its path and takes the scheme, host and port of the address you reached the card at:
@@ -274,8 +274,7 @@ A2a_client.create ~clock ~transport
   ~auth:(Auth.bearer token)                   (* or Auth.header "X-API-Key" key, Auth.dynamic f *)
   ~headers:[ ("X-Request-Source", "my-service") ]
   ~extensions:[ "https://example.com/ext/v1" ]  (* sent as A2A-Extensions *)
-  ~protocol_version:V1_0                      (* or V0_3; default V1_0 *)
-  ~binding:Jsonrpc                            (* or Http_json; default Jsonrpc *)
+  ~protocol:(V1_0 Jsonrpc)                    (* or V1_0 Http_json, V0_3; default V1_0 Jsonrpc *)
   ~tenant:"acme"
   ~timeout:30.                                (* unary calls and stream headers; default 30 s *)
   ~stream_idle_timeout:120.                   (* max silence on a stream; default none *)
@@ -355,7 +354,7 @@ let client = A2a_client.create ~clock ~transport:(T.transport agent) endpoint in
 T.requests agent   (* what the client sent *)
 ```
 
-Replies cover results (`send_message_response`, `task`), agent errors (`error`), any HTTP response (`http ~status:500 "boom"`), refused connections (`refuse`) and delays (`after`). Streams are lists of steps: events, in-band errors, raw bytes, pauses, a dropped connection (`drop`) or silence (`hang`). Pass `~protocol_version` and `~binding` to `T.agent` to answer as a 0.3 or REST agent.
+Replies cover results (`send_message_response`, `task`), agent errors (`error`), any HTTP response (`http ~status:500 "boom"`), refused connections (`refuse`) and delays (`after`). Streams are lists of steps: events, in-band errors, raw bytes, pauses, a dropped connection (`drop`) or silence (`hang`). Pass `~protocol` to `T.agent` to answer as a 0.3 or REST agent.
 
 ### Logging
 
@@ -388,7 +387,8 @@ Every operation returns `(_, A2a_client.Error.t) result`. The only exception tha
 
 These choices follow the official SDKs:
 
-- **Decoding:** unknown fields are ignored and absent scalars take their default value, as in ProtoJSON. The fields the client depends on are validated: task `id` and `status.state`, event `taskId`, exactly one kind of `Part` content, and exactly one payload in `SendMessageResponse` and `StreamResponse`.
+- **Decoding:** unknown fields are ignored and absent scalars take their default value, as in ProtoJSON. The fields the client depends on are required: task `id` and `status.state`, event `taskId`, an interface's `url`, a push config's `taskId` and `url`, exactly one kind of `Part` content, and exactly one payload in `SendMessageResponse` and `StreamResponse`.
+- **Absence in the types:** values whose absence means something are decoded into the type, never kept as `""`: a missing `messageId` or `contextId` is `None`, the last page has `next_page_token = None`, capabilities a card does not declare are `false`, and interface bindings and versions are `Known` values or `Unknown` text (for example `Unknown "GRPC"`). URLs are `Uri.t`.
 - **Enums:** in 1.0, both enum names and enum numbers are accepted. In 0.3, the state `unknown` maps to `Unspecified`.
 - **0.3 leniency:** a missing `kind` is inferred from the fields. A timestamp without a time zone is read as UTC; one that cannot be parsed is dropped instead of failing the event. `final` on status updates is ignored, because the end of a stream follows from the task state, as in 1.0. A v0.3 `OAuthFlows` with several flows keeps the first, in the order authorization code, client credentials, implicit, password.
 - **SSE event types:** SSE events of types other than `message` or `error` are ignored. The payload of an `event: error` is decoded as a JSON-RPC error, or with REST as a `google.rpc.Status`.
@@ -405,6 +405,7 @@ These choices follow the official SDKs:
 | `Codec_v0_3` | JSON conversion for the 0.3 wire format |
 | `Protocol_version` | `V1_0` / `V0_3` |
 | `Protocol_binding` | `Jsonrpc` / `Http_json` |
+| `Protocol` | A supported version and binding pair: `V1_0 Jsonrpc`, `V1_0 Http_json`, `V0_3` |
 | `Transport` | HTTP abstraction, and the cohttp-eio implementations (`cohttp`, `pooled`) |
 | `Lifecycle` | `Outcome` classification and folding stream events into a task |
 | `Error` | Error type and A2A error codes |

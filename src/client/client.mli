@@ -71,6 +71,19 @@ module Reconnect : sig
       [backoff < 1]. *)
 end
 
+(** How {!wait_for_task} and {!send_message_and_wait} poll. *)
+module Poll : sig
+  type t
+
+  val default : t
+  (** [make ()]. *)
+
+  val make : ?interval:float -> ?max_interval:float -> ?backoff:float -> unit -> t
+  (** Sleep [interval] seconds (default 1) between polls, multiplied by
+      [backoff] (default 1.5) each time, up to [max_interval] (default 10).
+      Raises [Invalid_argument] if [interval <= 0] or [backoff < 1]. *)
+end
+
 type t
 
 val create :
@@ -83,8 +96,7 @@ val create :
   ?max_response_size:int ->
   ?reconnect:Reconnect.t ->
   ?card:Agent_card.t ->
-  ?protocol_version:Protocol_version.t ->
-  ?binding:Protocol_binding.t ->
+  ?protocol:Protocol.t ->
   clock:_ Eio.Time.Mono.t ->
   transport:Transport.t ->
   Uri.t ->
@@ -92,10 +104,10 @@ val create :
 (** [create ~clock ~transport endpoint] talks to [endpoint], the URL of a
     [supportedInterfaces] entry.
 
-    @param protocol_version wire format to use. Default [V1_0]; pass [V0_3]
-      for an agent that implements A2A 0.3.x.
-    @param binding default [Jsonrpc]. With [Http_json], operation paths
-      such as [/message:send] are appended to [endpoint].
+    @param protocol version and binding. Default [V1_0 Jsonrpc]; pass
+      [V0_3] for an agent that implements A2A 0.3.x. With
+      [V1_0 Http_json], operation paths such as [/message:send] are
+      appended to [endpoint].
 
     @param headers extra HTTP headers on every request.
     @param tenant sent as [tenant] in every request (spec §8.3.2). Not
@@ -111,9 +123,7 @@ val create :
     @param reconnect for streaming calls. Default {!Reconnect.none}.
     @param card if given, operations that need a capability the card does
       not declare (streaming, push notifications, extended Agent Card) are
-      refused locally with [Unsupported_capability].
-
-    Raises [Invalid_argument] for [V0_3] with [Http_json]. *)
+      refused locally with [Unsupported_capability]. *)
 
 val connect :
   ?auth:Auth.t ->
@@ -139,9 +149,10 @@ val with_agent_card : t -> Agent_card.t -> t
 (** The same client, checking capabilities against another card, e.g. the
     one from {!get_extended_agent_card}. *)
 
-val version : t -> Protocol_version.t
-(** The protocol version this client speaks. *)
+val protocol : t -> Protocol.t
+(** The protocol version and binding this client speaks. *)
 
+val version : t -> Protocol_version.t
 val binding : t -> Protocol_binding.t
 
 (** {1 Discovery} *)
@@ -386,18 +397,13 @@ val wait_for_task :
   t ->
   ?tenant:string ->
   ?history_length:int ->
-  ?interval:float ->
-  ?max_interval:float ->
-  ?backoff:float ->
+  ?poll:Poll.t ->
   timeout:float ->
   string ->
   (Task.t, Error.t) result
-(** Poll [GetTask] until the task is terminal or interrupted. Sleeps
-    [interval] seconds (default 1) between polls, multiplied by [backoff]
-    (default 1.5) each time up to [max_interval] (default 10). Gives up
-    with [Poll_timeout] after [timeout] seconds; any failed [GetTask]
-    aborts with that error.
-    Raises [Invalid_argument] if [interval <= 0] or [backoff < 1]. *)
+(** Poll [GetTask] until the task is terminal or interrupted, as [poll]
+    says (default {!Poll.default}). Gives up with [Poll_timeout] after
+    [timeout] seconds; any failed [GetTask] aborts with that error. *)
 
 val send_message_and_wait :
   t ->
@@ -405,9 +411,7 @@ val send_message_and_wait :
   ?configuration:Send_message_configuration.t ->
   ?metadata:metadata ->
   ?history_length:int ->
-  ?interval:float ->
-  ?max_interval:float ->
-  ?backoff:float ->
+  ?poll:Poll.t ->
   timeout:float ->
   Message.t ->
   (Lifecycle.Outcome.t, Error.t) result

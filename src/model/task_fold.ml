@@ -6,7 +6,7 @@ type artifact = { artifact : Artifact.t; rev_parts : Part.t list }
 type snapshot = {
   base : Task.t;  (* up to date except for [history] and [artifacts] *)
   rev_history : Message.t list;
-  seen : Ids.t;  (* non-empty message ids in [rev_history] *)
+  seen : Ids.t;  (* message ids in [rev_history] *)
   rev_artifacts : artifact list;
 }
 
@@ -19,7 +19,7 @@ let of_task (t : Task.t) =
     rev_history = List.rev t.history;
     seen =
       List.fold_left
-        (fun s (m : Message.t) -> if m.message_id = "" then s else Ids.add m.message_id s)
+        (fun s (m : Message.t) -> Option.fold ~none:s ~some:(fun id -> Ids.add id s) m.message_id)
         Ids.empty t.history;
     rev_artifacts =
       List.rev_map (fun (a : Artifact.t) -> { artifact = a; rev_parts = List.rev a.parts }) t.artifacts }
@@ -45,9 +45,9 @@ let merge_metadata old upd =
 let status_update s (e : Task_status_update_event.t) =
   let rev_history, seen =
     match e.status.message with
-    | Some m when m.message_id = "" -> (m :: s.rev_history, s.seen)
-    | Some m when not (Ids.mem m.message_id s.seen) ->
-        (m :: s.rev_history, Ids.add m.message_id s.seen)
+    | Some ({ message_id = None; _ } as m) -> (m :: s.rev_history, s.seen)
+    | Some ({ message_id = Some id; _ } as m) when not (Ids.mem id s.seen) ->
+        (m :: s.rev_history, Ids.add id s.seen)
     | _ -> (s.rev_history, s.seen)
   in
   let base = s.base in
@@ -56,8 +56,7 @@ let status_update s (e : Task_status_update_event.t) =
       { base with
         status = e.status;
         metadata = merge_metadata base.metadata e.metadata;
-        context_id =
-          (match base.context_id with None when e.context_id <> "" -> Some e.context_id | c -> c) };
+        context_id = (match base.context_id with None -> e.context_id | c -> c) };
     rev_history;
     seen }
 
@@ -87,9 +86,7 @@ let step current (ev : Stream_response.t) =
   let target ~task_id ~context_id =
     match current with
     | Some s when s.base.id = task_id -> s
-    | _ ->
-        let context_id = if context_id = "" then None else Some context_id in
-        of_task (Task.make ?context_id ~id:task_id (Task_status.make Task_state.Unspecified))
+    | _ -> of_task (Task.make ?context_id ~id:task_id (Task_status.make Task_state.Unspecified))
   in
   match ev with
   | Task t -> Some (of_task t)

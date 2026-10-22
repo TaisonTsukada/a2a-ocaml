@@ -13,7 +13,7 @@ let check_artifacts name (t : Task.t) =
         (p1.content = Raw "\000tck\255" && p1.filename = Some "o.bin"
         && p1.media_type = Some "application/octet-stream")
         "content";
-      check (name ^ ": file uri part") (p2.content = Url "https://example.com/o.txt") "content";
+      check (name ^ ": file uri part") (match p2.content with Url u -> Uri.to_string u = "https://example.com/o.txt" | _ -> false) "content";
       check (name ^ ": data part") (p3.content = Data (`Assoc [ ("key", `String "value") ])) "content"
   | _ -> check (name ^ ": file/data artifact") false "missing or wrong shape"
 
@@ -45,7 +45,7 @@ let run ~clock ~transport base =
   let parts =
     [ Part.text "echo";
       Part.raw ~filename:"b.bin" ~media_type:"application/octet-stream" "\001\002\255";
-      Part.url ~filename:"c.txt" ~media_type:"text/plain" "https://example.com/c.txt";
+      Part.url ~filename:"c.txt" ~media_type:"text/plain" (Uri.of_string "https://example.com/c.txt");
       Part.make (Data (`Assoc [ ("n", `Int 1) ]));
       Part.make (Data (`List [ `String "not"; `String "an object" ])) ]
   in
@@ -105,7 +105,7 @@ let run ~clock ~transport base =
 
   (match send ~configuration:immediately "slow" with
    | Ok (Task t) -> (
-       match wait_for_task client ~interval:0.5 ~timeout:20. t.id with
+       match wait_for_task client ~poll:(Poll.make ~interval:0.5 ()) ~timeout:20. t.id with
        | Ok t' -> check "wait_for_task polls to completion" (Task.state t' = Completed) (Task_state.to_string t'.status.state)
        | Error e -> check "wait_for_task" false (err e))
    | _ -> check "wait_for_task" false "no task");

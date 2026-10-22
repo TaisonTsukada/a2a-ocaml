@@ -147,12 +147,8 @@ type agent = {
   mutable received : Transport.request list;  (* newest first *)
 }
 
-let agent ?(protocol_version = Protocol_version.V1_0) ?(binding = Protocol_binding.Jsonrpc) ~clock
-    handler =
-  (match (protocol_version, binding) with
-   | V0_3, Http_json -> invalid_arg "A2a_client_testing.agent: protocol 0.3 has no HTTP+JSON binding"
-   | _ -> ());
-  { codec = codec protocol_version; binding; clock = (clock :> Eio.Time.Mono.ty Eio.Resource.t); handler;
+let agent ?(protocol = Protocol.default) ~clock handler =
+  { codec = codec (Protocol.version protocol); binding = Protocol.binding protocol; clock = (clock :> Eio.Time.Mono.ty Eio.Resource.t); handler;
     received = [] }
 
 let requests a = List.rev a.received

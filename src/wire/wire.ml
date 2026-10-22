@@ -1,8 +1,7 @@
 open Types
 
 type t = {
-  version : Protocol_version.t;
-  binding : Protocol_binding.t;
+  protocol : Protocol.t;
   extension_headers : string list;
   send_message : (Send_message_request.t, Send_message_response.t) Op.t;
   send_streaming_message : (Send_message_request.t, Stream_response.t) Op.t;
@@ -26,7 +25,7 @@ let v1_0 binding =
     | Protocol_binding.Jsonrpc -> Jsonrpc.op ~meth:name encode decode
     | Http_json -> Rest.op ~meth ~path encode decode
   in
-  { version = V1_0; binding; extension_headers = [ "A2A-Extensions" ];
+  { protocol = V1_0 binding; extension_headers = [ "A2A-Extensions" ];
     send_message =
       op "SendMessage" (`POST, "/message:send") Codec.send_message_request_to_json
         Codec.send_message_response;
@@ -61,7 +60,7 @@ let v1_0 binding =
 
 let v0_3 =
   let op meth encode decode = Jsonrpc.op ~meth encode decode in
-  { version = V0_3; binding = Jsonrpc; extension_headers = [ "A2A-Extensions"; "X-A2A-Extensions" ];
+  { protocol = V0_3; extension_headers = [ "A2A-Extensions"; "X-A2A-Extensions" ];
     send_message =
       op "message/send" Codec_v0_3.send_message_request_to_json Codec_v0_3.send_message_response;
     send_streaming_message =
@@ -88,16 +87,10 @@ let v0_3 =
     get_extended_agent_card =
       op "agent/getAuthenticatedExtendedCard" (fun _ -> `Null) Codec.agent_card }
 
-let supports (version : Protocol_version.t) (binding : Protocol_binding.t) =
-  match (version, binding) with V1_0, _ | V0_3, Jsonrpc -> true | V0_3, Http_json -> false
-
 let v1_0_jsonrpc = v1_0 Jsonrpc
 let v1_0_rest = v1_0 Http_json
 
-let make version binding =
-  if not (supports version binding) then
-    invalid_arg "the HTTP+JSON binding is only supported with protocol 1.0";
-  match (version : Protocol_version.t), (binding : Protocol_binding.t) with
-  | V1_0, Jsonrpc -> v1_0_jsonrpc
-  | V1_0, Http_json -> v1_0_rest
-  | V0_3, _ -> v0_3
+let make : Protocol.t -> t = function
+  | V1_0 Jsonrpc -> v1_0_jsonrpc
+  | V1_0 Http_json -> v1_0_rest
+  | V0_3 -> v0_3

@@ -4,7 +4,7 @@ open Test_client
 let base = Uri.of_string "http://agent.test/a2a/rest/"
 
 let rest_client ?card ?tenant ~clock transport =
-  create ~clock ~transport ~binding:Http_json ?card ?tenant base
+  create ~clock ~transport ~protocol:(V1_0 Http_json) ?card ?tenant base
 
 let body req = Mock.request_json req
 
@@ -154,7 +154,7 @@ let card interfaces =
 let test_selection () =
   let pick ?bindings ifaces =
     match select_interface ?bindings (card ifaces) with
-    | Ok i -> i.url
+    | Ok i -> (Uri.to_string i.url)
     | Error e -> "error: " ^ Error.to_string e
   in
   Alcotest.(check string) "agent order" "http://agent.test/HTTP+JSON1.0"

@@ -22,7 +22,7 @@ let sample_message =
     ~reference_task_ids:[ "t-0" ]
     [ Part.text "hello";
       Part.raw ~filename:"a.bin" ~media_type:"application/octet-stream" "\000\001\xff";
-      Part.url ~media_type:"image/png" "https://example.com/a.png";
+      Part.url ~media_type:"image/png" (Uri.of_string "https://example.com/a.png");
       Part.data (`Assoc [ ("x", `List [ `Int 1; `Null ]) ]) ]
 
 let test_message_roundtrip () =
@@ -221,13 +221,13 @@ let test_agent_card () =
        | _ -> Alcotest.fail "bearer scheme");
       (match List.assoc "oauth" card.security_schemes with
        | Security_scheme.Oauth2 { flows = Some (Oauth_flow.Client_credentials { token_url; scopes; _ }); _ } ->
-           Alcotest.(check string) "token url" "https://auth.example.com/token" token_url;
+           Alcotest.(check string) "token url" "https://auth.example.com/token" (Uri.to_string token_url);
            Alcotest.(check (list (pair string string))) "scopes" [ ("read", "Read access") ] scopes
        | _ -> Alcotest.fail "oauth scheme");
       Alcotest.(check (list (list (pair string (list string))))) "requirements"
         [ [ ("google", [ "openid"; "profile" ]) ] ] card.security_requirements;
       (match select_interface card with
-       | Ok i -> Alcotest.(check string) "jsonrpc url" "https://georoute-agent.example.com/a2a/v1" i.url
+       | Ok i -> Alcotest.(check string) "jsonrpc url" "https://georoute-agent.example.com/a2a/v1" (Uri.to_string i.url)
        | Error e -> Alcotest.fail (Error.to_string e))
 
 let test_select_interface () =
@@ -245,13 +245,13 @@ let test_select_interface () =
              {"url":"http://later","protocolBinding":"JSONRPC","protocolVersion":"1.1"}]|})
    with
   | Ok i ->
-      Alcotest.(check string) "url" "http://new" i.url;
+      Alcotest.(check string) "url" "http://new" (Uri.to_string i.url);
       Alcotest.(check (option string)) "tenant" (Some "t1") i.tenant
   | Error e -> Alcotest.fail (Error.to_string e));
   let v03_only = card {|[{"url":"http://grpc","protocolBinding":"GRPC","protocolVersion":"1.0"},
                          {"url":"http://old","protocolBinding":"JSONRPC","protocolVersion":"0.3.0"}]|} in
   (match select_interface v03_only with
-   | Ok i -> Alcotest.(check string) "0.3 fallback" "http://old" i.url
+   | Ok i -> Alcotest.(check string) "0.3 fallback" "http://old" (Uri.to_string i.url)
    | Error e -> Alcotest.fail (Error.to_string e));
   (match select_interface ~protocol_version:V1_0 v03_only with
    | Error (Error.No_compatible_interface msg) ->
@@ -266,8 +266,42 @@ let test_select_interface () =
       Alcotest.(check bool) "lists offers" true (contains ~sub:"JSONRPC 0.2.5" msg)
   | _ -> Alcotest.fail "expected No_compatible_interface"
 
+(* Absence is decoded into the type once, never left as [""] for later
+   checks. *)
+let test_absent_values () =
+  let get = function Ok v -> v | Error e -> Alcotest.fail e in
+  let ev =
+    get (decode Codec.stream_response
+           {|{"statusUpdate":{"taskId":"t","contextId":"","status":{"state":"TASK_STATE_WORKING",
+              "message":{"role":"ROLE_AGENT","parts":[{"text":"x"}]}}}}|})
+  in
+  (match ev with
+   | Status_update { context_id = None; status = { message = Some { message_id = None; _ }; _ }; _ } -> ()
+   | _ -> Alcotest.fail "empty contextId and absent messageId should be None");
+  let r = get (decode Codec.list_tasks_response {|{"tasks":[],"nextPageToken":""}|}) in
+  Alcotest.(check (option string)) "last page" None r.next_page_token;
+  expect_error ~contains:"taskId"
+    (decode Codec.task_push_notification_config {|{"url":"https://hook.test"}|});
+  expect_error ~contains:"url"
+    (decode Codec.task_push_notification_config {|{"taskId":"t","url":""}|});
+  let card = get (decode Codec.agent_card {|{"name":"a","supportedInterfaces":[
+      {"url":"http://h","protocolBinding":"GRPC","protocolVersion":"2.0"}]}|}) in
+  (match card.supported_interfaces with
+   | [ { protocol_binding = Unknown "GRPC"; protocol_version = Unknown "2.0"; _ } ] -> ()
+   | _ -> Alcotest.fail "unknown binding and version are kept as text");
+  Alcotest.(check bool) "absent capability is false" false card.capabilities.streaming
+
+let test_protocol () =
+  Alcotest.(check bool) "0.3 over REST is not a protocol" true
+    (Protocol.make V0_3 Http_json = None);
+  Alcotest.(check bool) "1.0 over REST" true (Protocol.make V1_0 Http_json = Some (V1_0 Http_json));
+  Alcotest.check_raises "Poll.make" (Invalid_argument "Poll.make: need interval > 0 and backoff >= 1")
+    (fun () -> ignore (Poll.make ~interval:0. ()))
+
 let tests =
   [ ("message roundtrip", `Quick, test_message_roundtrip);
+    ("absent values", `Quick, test_absent_values);
+    ("protocol", `Quick, test_protocol);
     ("message wire format", `Quick, test_message_wire_format);
     ("request omits defaults", `Quick, test_request_omits_defaults);
     ("SendMessageResponse task (spec 6.1)", `Quick, test_send_message_response_task);

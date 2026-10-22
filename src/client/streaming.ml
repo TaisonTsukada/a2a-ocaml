@@ -20,14 +20,14 @@ let reached p st =
 let settled = reached (fun s -> not (Task_state.is_active s))
 let finished = reached Task_state.is_terminal
 
-let outcome st =
-  match (Task_fold.task st.task, st.message) with
-  | Some task, _ -> Lifecycle.Outcome.of_task task
-  | None, Some m -> Lifecycle.Outcome.Message m
-  | None, None -> assert false
-
 let ended st = Error (Error.Stream_ended { last_task = Task_fold.task st.task })
-let conclude st = if settled st then Ok (outcome st) else ended st
+
+(* The end of an exchange: the outcome if the agent is done for now. *)
+let conclude st =
+  match (settled st, Task_fold.task st.task, st.message) with
+  | true, Some task, _ -> Ok (Lifecycle.Outcome.of_task task)
+  | true, None, Some m -> Ok (Lifecycle.Outcome.Message m)
+  | _ -> ended st
 
 let deliver st ~on_event ev =
   st.task <- Task_fold.apply st.task ev;
@@ -86,7 +86,7 @@ let attempt t (op : _ Op.t) req ~st ~on_event =
             Option.iter (fun ms -> st.retry <- Some (float_of_int ms /. 1000.)) ev.retry;
             let* sr = r.decode ev.data in
             deliver st ~on_event sr;
-            if finished st then Ok (outcome st) else handle_events rest
+            if finished st then conclude st else handle_events rest
       in
       let r = loop () in
       Log.debug (fun m -> m "%s stream closed (id %s)" op.name id);

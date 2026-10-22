@@ -76,15 +76,13 @@ end
 type agent
 
 val agent :
-  ?protocol_version:A2a_client.Protocol_version.t ->
-  ?binding:A2a_client.Protocol_binding.t ->
+  ?protocol:Protocol.t ->
   clock:_ Eio.Time.Mono.t ->
   (Transport.request -> Reply.t) ->
   agent
 (** An agent that answers each request with the handler's reply, in the
-    given wire format (default protocol 1.0 over JSON-RPC). Create the
-    client with the same [protocol_version] and [binding].
-    Raises [Invalid_argument] for protocol 0.3 with HTTP+JSON. *)
+    wire format of [protocol] (default {!A2a_client.Protocol.default}).
+    Create the client with the same [protocol]. *)
 
 val transport : agent -> Transport.t
 

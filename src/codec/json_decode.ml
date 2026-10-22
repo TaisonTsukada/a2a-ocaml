@@ -91,6 +91,15 @@ let string_opt_field name kvs =
 
 let string_field_default name kvs = field_default name string ~default:"" kvs
 
+let uri j = Result.map Uri.of_string (string j)
+
+let uri_field name kvs =
+  let* s = field name string kvs in
+  if s = "" then Error { path = [ name ]; message = "must not be empty" } else Ok (Uri.of_string s)
+
+let uri_opt_field name kvs = Result.map (Option.map Uri.of_string) (string_opt_field name kvs)
+let uri_field_default name kvs = Result.map Uri.of_string (string_field_default name kvs)
+
 let obj (f : (string * Yojson.Safe.t) list -> ('a, error) result) : 'a t =
  fun j ->
   let* kvs = assoc j in
