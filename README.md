@@ -1,10 +1,15 @@
-# a2a-ocaml
+# a2a-ocaml — OCaml SDK for the A2A Protocol
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![opam](https://img.shields.io/opam/v/a2a-client.svg)](https://opam.ocaml.org/packages/a2a-client/)
 [![A2A](https://img.shields.io/badge/A2A-v1.0%20%7C%20v0.3-green.svg)](https://github.com/a2aproject/A2A/blob/v1.0.1/docs/specification.md)
 ![OCaml](https://img.shields.io/badge/OCaml-%E2%89%A5%205.1-orange.svg)
 
-A type-safe [A2A (Agent2Agent) Protocol](https://github.com/a2aproject/A2A) **v1.0** client for OCaml 5, built on [Eio](https://github.com/ocaml-multicore/eio) and [cohttp-eio](https://github.com/mirage/ocaml-cohttp). It speaks the JSON-RPC and HTTP+JSON (REST) bindings, and is backward compatible with **v0.3** agents: the version and binding are negotiated from the Agent Card, and your code stays the same.
+A type-safe OCaml SDK and client library for the [Agent2Agent (A2A) Protocol](https://github.com/a2aproject/A2A), for connecting OCaml applications to AI agents.
+
+Built for OCaml 5 with [Eio](https://github.com/ocaml-multicore/eio) and [cohttp-eio](https://github.com/mirage/ocaml-cohttp), it supports A2A **v1.0** over JSON-RPC and HTTP+JSON (REST), A2A **v0.3** over JSON-RPC, and Server-Sent Events (SSE) streaming. The protocol version and binding are negotiated from the Agent Card, so your application uses the same OCaml API with either version.
+
+[Quick start](#quick-start) · [Package & documentation](https://ocaml.org/p/a2a-client/latest) · [Changelog](CHANGES.md) · [Examples](examples/a2a_cli.ml)
 
 ```ocaml
 match A2a_client.send_text client "Summarize this company's latest filings" with
